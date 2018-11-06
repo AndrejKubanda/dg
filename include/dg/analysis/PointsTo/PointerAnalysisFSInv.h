@@ -408,6 +408,12 @@ public:
 
         return changed;
     }
+
+    void run() override {
+        PointerAnalysisFS::run();
+        InvalidatedAnalysis IA(getPS());
+        IA.run();
+    }
 };
 
 } // namespace pta
@@ -415,3 +421,4 @@ public:
 } // namespace dg
 
 #endif // _DG_ANALYSIS_POINTS_TO_WITH_INVALIDATE_H_
+
