@@ -407,9 +407,16 @@ public:
 
         return changed;
     }
+
+    void run() override {
+        PointerAnalysisFS::run();
+        InvalidatedAnalysis IA(getPS());
+        IA.run();
+    }
 };
 
 } // namespace pta
 } // namespace dg
 
 #endif
+

@@ -136,7 +136,7 @@ public:
         }
     }
 
-    bool run();
+    virtual bool run();
 
     // generic error
     // @msg - message for the user
