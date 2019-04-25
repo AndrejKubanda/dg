@@ -44,8 +44,6 @@ class InvalidatedAnalysis {
     // mapping from PSNode's ID to States
     std::vector<State *> _mapping;
     std::vector<std::unique_ptr<State>> _states;
-    // each set includes all nodes that point to target node on ID-index
-    std::vector<std::set<PSNode*>> _targetOrigins;
 
     static inline bool isRelevantNode(PSNode *node) {
         return node->getType() == PSNodeType::STORE ||
@@ -68,18 +66,18 @@ class InvalidatedAnalysis {
 
     // crates new State in _states and creates a pointer to it in _mapping
     State *newState(PSNode *nd) {
-        assert(nd->getID() < _mapping.size());
+        assert(nd->getID()-1 < _mapping.size());
 
         _states.emplace_back(new State());
         auto state = _states.back().get();
-        _mapping[nd->getID()] = state;
+        _mapping[nd->getID()-1] = state;
 
         return state;
     }
 
     State *getState(PSNode *nd) {
-        assert(nd->getID() < _mapping.size());
-        return _mapping[nd->getID()];
+        assert(nd->getID()-1 < _mapping.size());
+        return _mapping[nd->getID()-1];
     }
 
     static inline bool changesState(PSNode *node) {
@@ -89,32 +87,24 @@ class InvalidatedAnalysis {
     }
 
     bool decideMustOrMay(PSNode* node, PSNode* target) {
-        // TODO: target decide whether it MUST or MAY be INV
-        /*
-         * if node is the only node pointing to target -> must be inv
-         * if multiple nodes are pointing to target -> may be inv
-         * wouldn't it be convenient to get a set of nodes that point to target node for each target node?
-         */
-
-        // simplified example :
-        if (_targetOrigins[target->getID()].size() == 1) {
-            // MUST
-        } else {
-            // MAY
+        size_t pointsToSize = node->pointsTo.size();
+        if (pointsToSize == 1) {
+            // must
+        } else if (pointsToSize > 1) {
+            // may
         }
-
         return false;
     }
 
     bool processNode(PSNode *node) {
-        assert(node->getID() < _states.size());
+        assert(node->getID()-1 < _states.size());
 
         // if node has not changed -> node now shares a state with its predecessor
         if (noChange(node)) {
             auto pred = node->getSinglePredecessor();
-            assert(pred->getID() <_states.size());
+            assert(pred->getID()-1 <_states.size());
 
-            _mapping[node->getID()] = getState(pred);
+            _mapping[node->getID()-1] = getState(pred);
             return false;
         }
 
@@ -135,26 +125,14 @@ class InvalidatedAnalysis {
         return changed;
     }
 
-    // initializes a vector of sets of origin nodes that point to a target node on index node.id;
-    // TODO: A --> B; B --> C. Are the pointers transitive? Does A --> C now?
-    void initializeTargetOrigins() {
-        for (auto& ndUptr : PS->getNodes()) {
-            for (const auto& ptrStruct : ndUptr->pointsTo) {
-                _targetOrigins[ptrStruct.target->getID()].insert(ndUptr.get());
-            }
-        }
-    }
-
 public:
 
     /// Pointer subGraph with computed pointers
     InvalidatedAnalysis(PointerSubgraph *ps)
-    : PS(ps), _states(ps->size()), _mapping(ps->size()) {
+    : PS(ps), _mapping(ps->size()), _states(ps->size()) {
         for (size_t i = 0; i < ps->size(); ++i) {
             _mapping[i] = _states[i].get();
         }
-        initializeTargetOrigins();
-
     }
 
     void run() {
