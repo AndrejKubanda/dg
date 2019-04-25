@@ -66,18 +66,18 @@ class InvalidatedAnalysis {
 
     // crates new State in _states and creates a pointer to it in _mapping
     State *newState(PSNode *nd) {
-        assert(nd->getID()-1 < _mapping.size());
+        assert(nd->getID() < _mapping.size());
 
         _states.emplace_back(new State());
         auto state = _states.back().get();
-        _mapping[nd->getID()-1] = state;
+        _mapping[nd->getID()] = state;
 
         return state;
     }
 
     State *getState(PSNode *nd) {
-        assert(nd->getID()-1 < _mapping.size());
-        return _mapping[nd->getID()-1];
+        assert(nd->getID() < _mapping.size());
+        return _mapping[nd->getID()];
     }
 
     static inline bool changesState(PSNode *node) {
@@ -86,25 +86,29 @@ class InvalidatedAnalysis {
                isRelevantNode(node);
     }
 
+    // at the moment this method is not optimal. It will be useful later.
     bool decideMustOrMay(PSNode* node, PSNode* target) {
         size_t pointsToSize = node->pointsTo.size();
+        bool changed = false;
         if (pointsToSize == 1) {
             // must
+            getState(node)->mustBeInv.insert(target);
         } else if (pointsToSize > 1) {
             // may
+            getState(node)->mayBeInv.insert(target);
         }
-        return false;
+        return changed;
     }
 
     bool processNode(PSNode *node) {
-        assert(node->getID()-1 < _states.size());
-
+        assert(node);
+        assert(node->getID() < _states.size());
         // if node has not changed -> node now shares a state with its predecessor
         if (noChange(node)) {
             auto pred = node->getSinglePredecessor();
-            assert(pred->getID()-1 <_states.size());
+            assert(pred->getID() <_states.size());
 
-            _mapping[node->getID()-1] = getState(pred);
+            _mapping[node->getID()] = getState(pred);
             return false;
         }
 
@@ -121,14 +125,12 @@ class InvalidatedAnalysis {
                 changed |= decideMustOrMay(node, ptrStruct.target);
             }
         }
-
         return changed;
     }
 
 public:
 
-    /// Pointer subGraph with computed pointers
-    InvalidatedAnalysis(PointerSubgraph *ps)
+    explicit InvalidatedAnalysis(PointerSubgraph *ps)
     : PS(ps), _mapping(ps->size()), _states(ps->size()) {
         for (size_t i = 0; i < ps->size(); ++i) {
             _mapping[i] = _states[i].get();
@@ -138,14 +140,15 @@ public:
     void run() {
         std::vector<PSNode *> to_process;
         std::vector<PSNode *> changed;
-        to_process.resize(PS->size());
 
-        for (auto& nd : PS->getNodes())
+        // node[0] is null so indices of nodes correspond to their IDs
+        for (auto& nd : PS->getNodes()) {
             to_process.push_back(nd.get());
+        }
 
         while(!to_process.empty()) {
-            for (auto nd : to_process) {
-                if (processNode(nd))
+            for (auto* nd : to_process) {
+                if (nd && processNode(nd))
                     changed.push_back(nd);
             }
             to_process.swap(changed);
