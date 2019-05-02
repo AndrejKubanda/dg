@@ -6,12 +6,15 @@
 #include "PSNode.h"
 #include <algorithm>
 #include <memory>
+#include <sstream>
 
 namespace dg {
 namespace analysis {
 namespace pta {
 
 class InvalidatedAnalysis {
+#define debugPrint 0
+
     using PSNodePtrSet = std::set<PSNode *>;
 
     struct State {
@@ -40,6 +43,29 @@ class InvalidatedAnalysis {
             mayBeInv.insert(predState->mayBeInv.begin(), predState->mayBeInv.end());
 
             return mustSizeBefore != mustBeInv.size() || maySizeBefore != mayBeInv.size();
+        }
+
+        std::string _tmpStateToString() {
+            std::stringstream ss;
+
+            ss << "MUST: { ";
+            bool delim = false;
+            for (auto& item : mustBeInv) {
+                if (delim) { ss << ", "; }
+                ss << '<' << item->getID() << '>';
+                delim = true;
+            }
+            ss << " }\n";
+
+            ss << "MAY : { ";
+            delim = false;
+            for (auto& item : mayBeInv) {
+                if (delim) { ss << ", "; }
+                ss << '<' << item->getID() << '>';
+                delim = true;
+            }
+            ss << " }";
+            return ss.str();
         }
     };
 
@@ -92,6 +118,9 @@ class InvalidatedAnalysis {
 
     // at the moment this method is not optimal. It will be useful later.
     bool decideMustOrMay(PSNode* node, PSNode* target) {
+#if debugPrint
+        std::cout << "[DECIDE]\n";
+#endif
         size_t pointsToSize = node->pointsTo.size();
         bool changed = false;
         if (pointsToSize == 1) {
@@ -101,16 +130,17 @@ class InvalidatedAnalysis {
             // may
             getState(node)->mayBeInv.insert(target);
         }
+#if debugPrint
+        std::cout << "[inserted target " << target->getID() << "]\n";
+#endif
         return changed;
     }
 
     bool processNode(PSNode *node) {
-        assert(node);
-        assert(node->getID() < _states.size());
+        assert(node && node->getID() < _states.size());
 
         // if node has not changed -> node now shares a state with its predecessor
         if (noChange(node)) {
-            //std::cerr << "[no change]\n";
             auto pred = node->getSinglePredecessor();
             assert(pred->getID() <_states.size());
 
@@ -127,14 +157,30 @@ class InvalidatedAnalysis {
             if (pred)
                 changed |= getState(node)->update(getState(pred));
         }
-        /*
+
         if (isFreeType(node)) {
+#if debugPrint
+            std::cout << "[" << node->getID() <<" is FREE]\n";
+#endif
             for (const auto& ptrStruct : node->pointsTo) {
+#if debugPrint
+                std::cout << "[points to: " << ptrStruct.target->getID() << "]\n";
+#endif
                 changed |= decideMustOrMay(node, ptrStruct.target);
             }
         }
-        */
         return changed;
+    }
+
+    std::string _tmpStatesToString() {
+        std::stringstream ss;
+        for (auto& nd : PS->getNodes()) {
+            if (!nd) { continue; }
+            State* st = getState(nd.get());
+            ss << '<' << nd->getID() << ">\n"
+                << st->_tmpStateToString() << "\n\n";
+        }
+        return ss.str();
     }
 
 public:
@@ -169,6 +215,9 @@ public:
             to_process.swap(changed);
             changed.clear();
         }
+#if debugPrint
+        std::cout << _tmpStatesToString() << '\n';
+#endif
     }
 
 };
