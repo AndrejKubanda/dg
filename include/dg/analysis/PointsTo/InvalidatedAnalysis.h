@@ -6,12 +6,15 @@
 #include "PSNode.h"
 #include <algorithm>
 #include <memory>
+#include <sstream>
 
 namespace dg {
 namespace analysis {
 namespace pta {
 
 class InvalidatedAnalysis {
+#define debugPrint 0
+
     using PSNodePtrSet = std::set<PSNode *>;
 
     struct State {
@@ -40,6 +43,29 @@ class InvalidatedAnalysis {
             mayBeInv.insert(predState->mayBeInv.begin(), predState->mayBeInv.end());
 
             return mustSizeBefore != mustBeInv.size() || maySizeBefore != mayBeInv.size();
+        }
+
+        std::string _tmpStateToString() {
+            std::stringstream ss;
+
+            ss << "MUST: { ";
+            bool delim = false;
+            for (auto& item : mustBeInv) {
+                if (delim) { ss << ", "; }
+                ss << item->getID();
+                delim = true;
+            }
+            ss << " }\n";
+
+            ss << "MAY : { ";
+            delim = false;
+            for (auto& item : mayBeInv) {
+                if (delim) { ss << ", "; }
+                ss << item->getID();
+                delim = true;
+            }
+            ss << " }";
+            return ss.str();
         }
     };
 
@@ -90,27 +116,31 @@ class InvalidatedAnalysis {
                isRelevantNode(node);
     }
 
-    // at the moment this method is not optimal. It will be useful later.
+
     bool decideMustOrMay(PSNode* node, PSNode* target) {
-        size_t pointsToSize = node->pointsTo.size();
-        bool changed = false;
+
+        if (debugPrint) std::cout << "[must or may]\n";
+
+        State* state = getState(node);
+        size_t mustSize = state->mustBeInv.size();
+        size_t maySize = state->mayBeInv.size();
+        size_t pointsToSize = node->getOperand(0)->pointsTo.size();
+
         if (pointsToSize == 1) {
-            // must
-            getState(node)->mustBeInv.insert(target);
+            state->mustBeInv.insert(target);
         } else if (pointsToSize > 1) {
-            // may
-            getState(node)->mayBeInv.insert(target);
+            state->mayBeInv.insert(target);
         }
-        return changed;
+        if (debugPrint) std::cout << "[inserted target " << target->getID() << "]\n";
+
+        return mustSize != state->mustBeInv.size() || maySize != state->mayBeInv.size();
     }
 
     bool processNode(PSNode *node) {
-        assert(node);
-        assert(node->getID() < _states.size());
+        assert(node && node->getID() < _states.size());
 
         // if node has not changed -> node now shares a state with its predecessor
         if (noChange(node)) {
-            //std::cerr << "[no change]\n";
             auto pred = node->getSinglePredecessor();
             assert(pred->getID() <_states.size());
 
@@ -120,21 +150,36 @@ class InvalidatedAnalysis {
 
         // no need to create new states when we initialize states, mapping in constructor
         // if (changesState(node) && !getState(node)) { newState(node); }
+
         bool changed = false;
 
-
+        // I had to get rid of this so it doesnt cycle.
+        /*
         for (PSNode* pred : node->getPredecessors()) {
             if (pred)
                 changed |= getState(node)->update(getState(pred));
-        }
-        /*
+        }*/
+
         if (isFreeType(node)) {
-            for (const auto& ptrStruct : node->pointsTo) {
+            if (debugPrint) std::cout << "[" << node->getID() <<" is FREE]\n";
+            for (const auto& ptrStruct : node->getOperand(0)->pointsTo) { // we want .getOperand(0) - zero-th operand's points to set
+                if (debugPrint) std::cout << "[points to: " << ptrStruct.target->getID() << "]\n";
                 changed |= decideMustOrMay(node, ptrStruct.target);
             }
         }
-        */
+
         return changed;
+    }
+
+    std::string _tmpStatesToString() {
+        std::stringstream ss;
+        for (auto& nd : PS->getNodes()) {
+            if (!nd) { continue; }
+            State* st = getState(nd.get());
+            ss << '<' << nd->getID() << ">\n"
+                << st->_tmpStateToString() << "\n\n";
+        }
+        return ss.str();
     }
 
 public:
@@ -142,12 +187,8 @@ public:
     explicit InvalidatedAnalysis(PointerSubgraph *ps)
     : PS(ps), _mapping(ps->size()), _states(ps->size()) {
         for (size_t i = 1; i < ps->size(); ++i) {
-            _states[i] = llvm::make_unique<State>(); // why llvm:: instead of std:: ???
+            _states[i] = llvm::make_unique<State>();
             _mapping[i] = _states[i].get();
-        }
-        for (size_t i = 1; i < ps->size(); ++i) {
-            assert(_states[i] != nullptr);
-            assert(_mapping[i] != nullptr);
         }
     }
 
@@ -155,7 +196,7 @@ public:
         std::vector<PSNode *> to_process;
         std::vector<PSNode *> changed;
 
-        // at [0] is uptr to nullptr
+        // [0] is nullptr
         for (auto& nd : PS->getNodes()) {
             if (nd)
                 to_process.push_back(nd.get());
@@ -169,6 +210,7 @@ public:
             to_process.swap(changed);
             changed.clear();
         }
+        if (debugPrint) std::cout << _tmpStatesToString() << '\n';
     }
 
 };
