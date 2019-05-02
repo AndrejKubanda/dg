@@ -4,6 +4,8 @@
 #include <set>
 #include "PointerSubgraph.h"
 #include "PSNode.h"
+#include <algorithm>
+#include <memory>
 
 namespace dg {
 namespace analysis {
@@ -19,6 +21,8 @@ class InvalidatedAnalysis {
         std::set<PSNode *> mustBeNull;
         std::set<PSNode *> cannotBeNull;
         */
+
+        State() = default;
 
         // node is changed when its State has been updated
         bool update(State* predState) {
@@ -76,7 +80,7 @@ class InvalidatedAnalysis {
     }
 
     State *getState(PSNode *nd) {
-        assert(nd->getID() < _mapping.size());
+        assert(nd && nd->getID() < _mapping.size());
         return _mapping[nd->getID()];
     }
 
@@ -103,8 +107,10 @@ class InvalidatedAnalysis {
     bool processNode(PSNode *node) {
         assert(node);
         assert(node->getID() < _states.size());
+
         // if node has not changed -> node now shares a state with its predecessor
         if (noChange(node)) {
+            //std::cerr << "[no change]\n";
             auto pred = node->getSinglePredecessor();
             assert(pred->getID() <_states.size());
 
@@ -116,15 +122,18 @@ class InvalidatedAnalysis {
         // if (changesState(node) && !getState(node)) { newState(node); }
         bool changed = false;
 
-        for (PSNode* pred : node->getPredecessors()) {
-            changed |= getState(node)->update(getState(pred));
-        }
 
+        for (PSNode* pred : node->getPredecessors()) {
+            if (pred)
+                changed |= getState(node)->update(getState(pred));
+        }
+        /*
         if (isFreeType(node)) {
             for (const auto& ptrStruct : node->pointsTo) {
                 changed |= decideMustOrMay(node, ptrStruct.target);
             }
         }
+        */
         return changed;
     }
 
@@ -132,8 +141,13 @@ public:
 
     explicit InvalidatedAnalysis(PointerSubgraph *ps)
     : PS(ps), _mapping(ps->size()), _states(ps->size()) {
-        for (size_t i = 0; i < ps->size(); ++i) {
+        for (size_t i = 1; i < ps->size(); ++i) {
+            _states[i] = llvm::make_unique<State>(); // why llvm:: instead of std:: ???
             _mapping[i] = _states[i].get();
+        }
+        for (size_t i = 1; i < ps->size(); ++i) {
+            assert(_states[i] != nullptr);
+            assert(_mapping[i] != nullptr);
         }
     }
 
@@ -141,9 +155,10 @@ public:
         std::vector<PSNode *> to_process;
         std::vector<PSNode *> changed;
 
-        // node[0] is null so indices of nodes correspond to their IDs
+        // at [0] is uptr to nullptr
         for (auto& nd : PS->getNodes()) {
-            to_process.push_back(nd.get());
+            if (nd)
+                to_process.push_back(nd.get());
         }
 
         while(!to_process.empty()) {
