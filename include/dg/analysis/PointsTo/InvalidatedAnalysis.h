@@ -182,6 +182,29 @@ class InvalidatedAnalysis {
         return ss.str();
     }
 
+    void fixPointsTo(PSNode* nd) {
+        State* state = getState(nd);
+        auto& mustSet = state->mustBeInv;
+        auto& maySet = state->mayBeInv;
+
+        auto& pointsTo = nd->pointsTo;
+
+        for (Pointer ptrStruct : pointsTo) {
+
+            auto mustIt = mustSet.find(ptrStruct.target);
+            if (mustIt != mustSet.end()) {
+                pointsTo.remove(ptrStruct.target);
+                pointsTo.add(INVALIDATED);
+            }
+
+            auto mayIt = maySet.find(ptrStruct.target);
+            if (mayIt != maySet.end()) {
+                pointsTo.add(INVALIDATED);
+            }
+        }
+
+    }
+
 public:
 
     explicit InvalidatedAnalysis(PointerSubgraph *ps)
@@ -211,6 +234,10 @@ public:
             changed.clear();
         }
         if (debugPrint) std::cout << _tmpStatesToString() << '\n';
+
+        for (auto& nd : PS->getNodes()) {
+            if (nd) fixPointsTo(nd.get());
+        }
     }
 
 };
