@@ -52,7 +52,7 @@ class InvalidatedAnalysis {
             bool delim = false;
             for (auto& item : mustBeInv) {
                 if (delim) { ss << ", "; }
-                ss << '<' << item->getID() << '>';
+                ss << item->getID();
                 delim = true;
             }
             ss << " }\n";
@@ -61,7 +61,7 @@ class InvalidatedAnalysis {
             delim = false;
             for (auto& item : mayBeInv) {
                 if (delim) { ss << ", "; }
-                ss << '<' << item->getID() << '>';
+                ss << item->getID();
                 delim = true;
             }
             ss << " }";
@@ -116,24 +116,24 @@ class InvalidatedAnalysis {
                isRelevantNode(node);
     }
 
-    // at the moment this method is not optimal. It will be useful later.
+
     bool decideMustOrMay(PSNode* node, PSNode* target) {
-#if debugPrint
-        std::cout << "[DECIDE]\n";
-#endif
-        size_t pointsToSize = node->pointsTo.size();
-        bool changed = false;
+
+        if (debugPrint) std::cout << "[must or may]\n";
+
+        State* state = getState(node);
+        size_t mustSize = state->mustBeInv.size();
+        size_t maySize = state->mayBeInv.size();
+        size_t pointsToSize = node->getOperand(0)->pointsTo.size();
+
         if (pointsToSize == 1) {
-            // must
-            getState(node)->mustBeInv.insert(target);
+            state->mustBeInv.insert(target);
         } else if (pointsToSize > 1) {
-            // may
-            getState(node)->mayBeInv.insert(target);
+            state->mayBeInv.insert(target);
         }
-#if debugPrint
-        std::cout << "[inserted target " << target->getID() << "]\n";
-#endif
-        return changed;
+        if (debugPrint) std::cout << "[inserted target " << target->getID() << "]\n";
+
+        return mustSize != state->mustBeInv.size() || maySize != state->mayBeInv.size();
     }
 
     bool processNode(PSNode *node) {
@@ -150,25 +150,24 @@ class InvalidatedAnalysis {
 
         // no need to create new states when we initialize states, mapping in constructor
         // if (changesState(node) && !getState(node)) { newState(node); }
+
         bool changed = false;
 
-
+        // I had to get rid of this so it doesnt cycle.
+        /*
         for (PSNode* pred : node->getPredecessors()) {
             if (pred)
                 changed |= getState(node)->update(getState(pred));
-        }
+        }*/
 
         if (isFreeType(node)) {
-#if debugPrint
-            std::cout << "[" << node->getID() <<" is FREE]\n";
-#endif
-            for (const auto& ptrStruct : node->pointsTo) {
-#if debugPrint
-                std::cout << "[points to: " << ptrStruct.target->getID() << "]\n";
-#endif
+            if (debugPrint) std::cout << "[" << node->getID() <<" is FREE]\n";
+            for (const auto& ptrStruct : node->getOperand(0)->pointsTo) { // we want .getOperand(0) - zero-th operand's points to set
+                if (debugPrint) std::cout << "[points to: " << ptrStruct.target->getID() << "]\n";
                 changed |= decideMustOrMay(node, ptrStruct.target);
             }
         }
+
         return changed;
     }
 
@@ -188,12 +187,8 @@ public:
     explicit InvalidatedAnalysis(PointerSubgraph *ps)
     : PS(ps), _mapping(ps->size()), _states(ps->size()) {
         for (size_t i = 1; i < ps->size(); ++i) {
-            _states[i] = llvm::make_unique<State>(); // why llvm:: instead of std:: ???
+            _states[i] = llvm::make_unique<State>();
             _mapping[i] = _states[i].get();
-        }
-        for (size_t i = 1; i < ps->size(); ++i) {
-            assert(_states[i] != nullptr);
-            assert(_mapping[i] != nullptr);
         }
     }
 
@@ -201,7 +196,7 @@ public:
         std::vector<PSNode *> to_process;
         std::vector<PSNode *> changed;
 
-        // at [0] is uptr to nullptr
+        // [0] is nullptr
         for (auto& nd : PS->getNodes()) {
             if (nd)
                 to_process.push_back(nd.get());
@@ -215,9 +210,7 @@ public:
             to_process.swap(changed);
             changed.clear();
         }
-#if debugPrint
-        std::cout << _tmpStatesToString() << '\n';
-#endif
+        if (debugPrint) std::cout << _tmpStatesToString() << '\n';
     }
 
 };
