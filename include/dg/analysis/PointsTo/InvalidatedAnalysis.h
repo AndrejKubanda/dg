@@ -7,13 +7,16 @@
 #include <algorithm>
 #include <memory>
 #include <sstream>
+#include <fstream>
 
 namespace dg {
 namespace analysis {
 namespace pta {
 
 class InvalidatedAnalysis {
-#define debugPrint 0
+#define debugPrint 1
+
+    std::ofstream ofs = std::ofstream("invOutput");
 
     using PSNodePtrSet = std::set<PSNode *>;
 
@@ -26,6 +29,10 @@ class InvalidatedAnalysis {
         */
 
         State() = default;
+
+        bool empty() {
+            return mustBeInv.empty() && mayBeInv.empty();
+        }
 
         // node is changed when its State has been updated
         bool update(State* predState) {
@@ -119,7 +126,7 @@ class InvalidatedAnalysis {
 
     bool decideMustOrMay(PSNode* node, PSNode* target) {
 
-        if (debugPrint) std::cout << "[must or may]\n";
+        if (debugPrint) ofs << "[must or may]\n";
 
         State* state = getState(node);
         size_t mustSize = state->mustBeInv.size();
@@ -131,7 +138,7 @@ class InvalidatedAnalysis {
         } else if (pointsToSize > 1) {
             state->mayBeInv.insert(target);
         }
-        if (debugPrint) std::cout << "[inserted target " << target->getID() << "]\n";
+        if (debugPrint) ofs << "[inserted target " << target->getID() << "]\n";
 
         return mustSize != state->mustBeInv.size() || maySize != state->mayBeInv.size();
     }
@@ -161,9 +168,9 @@ class InvalidatedAnalysis {
         }*/
 
         if (isFreeType(node)) {
-            if (debugPrint) std::cout << "[" << node->getID() <<" is FREE]\n";
+            if (debugPrint) ofs << "[" << node->getID() <<" is FREE]\n";
             for (const auto& ptrStruct : node->getOperand(0)->pointsTo) { // we want .getOperand(0) - zero-th operand's points to set
-                if (debugPrint) std::cout << "[points to: " << ptrStruct.target->getID() << "]\n";
+                if (debugPrint) ofs << "[points to: " << ptrStruct.target->getID() << "]\n";
                 changed |= decideMustOrMay(node, ptrStruct.target);
             }
         }
@@ -182,28 +189,50 @@ class InvalidatedAnalysis {
         return ss.str();
     }
 
-    void fixPointsTo(PSNode* nd) {
-        State* state = getState(nd);
-        auto& mustSet = state->mustBeInv;
-        auto& maySet = state->mayBeInv;
+    // TODO: is it okay, if we dont find target in pointsTo, to remove first UNKNKOWN node we find?
+    bool fixMust(PSNode* nd) {
+        if (getState(nd)->empty())
+            return false;
+
+        bool changed = false;
 
         auto& pointsTo = nd->pointsTo;
-
-        // TODO: problem is that i change the contents of the container while Im iterating over it.
-        for (Pointer ptrStruct : pointsTo) {
-            std::cout << nd->getID() << '\n';
-            auto mustIt = mustSet.find(ptrStruct.target);
-            if (mustIt != mustSet.end()) {
-                pointsTo.remove(ptrStruct.target);
-                pointsTo.add(INVALIDATED);
-            }
-
-            auto mayIt = maySet.find(ptrStruct.target);
-            if (mayIt != maySet.end()) {
-                pointsTo.add(INVALIDATED);
+        for (PSNode* target : getState(nd)->mustBeInv) {
+            ofs << "(must)<" << nd->getID() << ">:fixing pointsTo for target<" << target->getID() << ">\n";
+            if (pointsTo.pointsToTarget(target)) {
+                changed |= pointsTo.removeAny(target);
+                ofs << "something removed\n";
+            } else if (pointsTo.pointsToTarget(UNKNOWN_MEMORY)) {
+                changed |= pointsTo.removeAny(UNKNOWN_MEMORY);
             }
         }
+        if (changed)
+            ofs << "smth removed\n";
+        return changed;
+    }
 
+    bool fixMay(PSNode* nd) {
+        if (getState(nd)->empty())
+            return false;
+
+        bool changed = false;
+
+        auto& maySet = getState(nd)->mayBeInv;
+
+        for (Pointer ptrStruct : nd->pointsTo) {
+            auto mayIt = maySet.find(ptrStruct.target);
+            if (mayIt != maySet.end()) {
+                return true;
+            }
+        }
+        return changed;
+    };
+
+    void fixPointsTo(PSNode* nd) {
+        if (fixMust(nd) || fixMay(nd)) {
+            ofs << "[ INV inserted into <" << nd->getID() << ">'s pointsTo set]\n";
+            nd->pointsTo.add(INVALIDATED);
+        }
     }
 
 public:
@@ -234,7 +263,7 @@ public:
             to_process.swap(changed);
             changed.clear();
         }
-        if (debugPrint) std::cout << _tmpStatesToString() << '\n';
+        if (debugPrint) ofs << _tmpStatesToString() << '\n';
         for (auto& nd : PS->getNodes()) {
             if (nd) fixPointsTo(nd.get());
         }
