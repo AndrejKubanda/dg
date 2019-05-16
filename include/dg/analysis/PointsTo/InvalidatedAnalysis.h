@@ -29,16 +29,20 @@ class InvalidatedAnalysis {
         */
 
         State() = default;
+        State(PSNodePtrSet must, PSNodePtrSet may) : mustBeInv(std::move(must)), mayBeInv(std::move(may)) {}
 
         bool empty() {
             return mustBeInv.empty() && mayBeInv.empty();
         }
 
-        // node is changed when its State has been updated
         bool update(State* predState) {
             unsigned mustSizeBefore = mustBeInv.size();
             unsigned maySizeBefore = mayBeInv.size();
 
+            // 1.) copy sets to a new tmp node
+            State copy (mustBeInv, mayBeInv);
+
+            // 2.) update node's state
             // MUST: intersection
             PSNodePtrSet tmp;
             std::set_intersection(mustBeInv.begin(), mustBeInv.end(),
@@ -49,6 +53,11 @@ class InvalidatedAnalysis {
             // MAY: union
             mayBeInv.insert(predState->mayBeInv.begin(), predState->mayBeInv.end());
 
+            // 3.) add (union) copy sets to node's state's set
+            mustBeInv.insert(copy.mustBeInv.begin(), copy.mustBeInv.end());
+            mayBeInv.insert(copy.mayBeInv.begin(), copy.mayBeInv.end());
+
+            // return true if sizes of sets have changed
             return mustSizeBefore != mustBeInv.size() || maySizeBefore != mayBeInv.size();
         }
 
@@ -83,7 +92,7 @@ class InvalidatedAnalysis {
     std::vector<std::unique_ptr<State>> _states;
 
     static inline bool isRelevantNode(PSNode *node) {
-        return node->getType() == PSNodeType::STORE ||
+        return /*node->getType() == PSNodeType::STORE ||*/
                node->getType() == PSNodeType::ALLOC ||
                node->getType() == PSNodeType::DYN_ALLOC ||
                node->getType() == PSNodeType::FREE;
@@ -160,13 +169,6 @@ class InvalidatedAnalysis {
 
         bool changed = false;
 
-        // I had to get rid of this so it doesnt cycle.
-        /*
-        for (PSNode* pred : node->getPredecessors()) {
-            if (pred)
-                changed |= getState(node)->update(getState(pred));
-        }*/
-
         if (isFreeType(node)) {
             if (debugPrint) ofs << "[" << node->getID() <<" is FREE]\n";
             for (const auto& ptrStruct : node->getOperand(0)->pointsTo) { // we want .getOperand(0) - zero-th operand's points to set
@@ -174,7 +176,10 @@ class InvalidatedAnalysis {
                 changed |= decideMustOrMay(node, ptrStruct.target);
             }
         }
-
+        for (PSNode* pred : node->getPredecessors()) {
+            if (pred)
+                changed |= getState(node)->update(getState(pred));
+        }
         return changed;
     }
 
@@ -196,14 +201,16 @@ class InvalidatedAnalysis {
 
         bool changed = false;
 
-        auto& pointsTo = nd->pointsTo;
+        auto* pointsTo = &nd->pointsTo;
+
+        if (isFreeType(nd))
+            pointsTo = &nd->getOperand(0)->pointsTo;
+        //auto& pointsTo = nd->getOperand(0)->pointsTo;
         for (PSNode* target : getState(nd)->mustBeInv) {
             ofs << "(must)<" << nd->getID() << ">:fixing pointsTo for target<" << target->getID() << ">\n";
-            if (pointsTo.pointsToTarget(target)) {
-                changed |= pointsTo.removeAny(target);
+            if (pointsTo->pointsToTarget(target)) {
+                changed |= pointsTo->removeAny(target);
                 ofs << "something removed\n";
-            } else if (pointsTo.pointsToTarget(UNKNOWN_MEMORY)) {
-                changed |= pointsTo.removeAny(UNKNOWN_MEMORY);
             }
         }
         if (changed)
@@ -215,17 +222,26 @@ class InvalidatedAnalysis {
         if (getState(nd)->empty())
             return false;
 
-        bool changed = false;
+        auto* pointsTo = &nd->pointsTo;
+        if (isFreeType(nd))
+            pointsTo = &nd->getOperand(0)->pointsTo;
 
+        for (PSNode* target : getState(nd)->mayBeInv) {
+            ofs << "(may)<" << nd->getID() << ">:fixing pointsTo for target<" << target->getID() << ">\n";
+            if (pointsTo->pointsToTarget(target)) {
+                ofs << "(may)<" << nd->getID() << ">: target<" << target->getID() << "> found\n";
+                return true;
+            }
+        }
+        /*
         auto& maySet = getState(nd)->mayBeInv;
-
         for (Pointer ptrStruct : nd->pointsTo) {
             auto mayIt = maySet.find(ptrStruct.target);
             if (mayIt != maySet.end()) {
                 return true;
             }
-        }
-        return changed;
+        }*/
+        return false;
     };
 
     void fixPointsTo(PSNode* nd) {
