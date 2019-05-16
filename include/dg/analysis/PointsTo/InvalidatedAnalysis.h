@@ -61,7 +61,7 @@ class InvalidatedAnalysis {
             return mustSizeBefore != mustBeInv.size() || maySizeBefore != mayBeInv.size();
         }
 
-        std::string _tmpStateToString() {
+        std::string _tmpStateToString() const {
             std::stringstream ss;
 
             ss << "MUST: { ";
@@ -126,6 +126,11 @@ class InvalidatedAnalysis {
         return _mapping[nd->getID()];
     }
 
+    const State *getState(PSNode *nd) const {
+        assert(nd && nd->getID() < _mapping.size());
+        return _mapping[nd->getID()];
+    }
+
     static inline bool changesState(PSNode *node) {
         return node->predecessorsNum() == 0 ||
                node->predecessorsNum() > 1 ||
@@ -164,9 +169,6 @@ class InvalidatedAnalysis {
             return false;
         }
 
-        // no need to create new states when we initialize states, mapping in constructor
-        // if (changesState(node) && !getState(node)) { newState(node); }
-
         bool changed = false;
 
         if (isFreeType(node)) {
@@ -176,25 +178,52 @@ class InvalidatedAnalysis {
                 changed |= decideMustOrMay(node, ptrStruct.target);
             }
         }
+
         for (PSNode* pred : node->getPredecessors()) {
             if (pred)
                 changed |= getState(node)->update(getState(pred));
         }
+
         return changed;
     }
 
-    std::string _tmpStatesToString() {
+    std::string _tmpPointsToString(const PSNode* node) const {
         std::stringstream ss;
-        for (auto& nd : PS->getNodes()) {
-            if (!nd) { continue; }
-            State* st = getState(nd.get());
-            ss << '<' << nd->getID() << ">\n"
-                << st->_tmpStateToString() << "\n\n";
+        bool delim = false;
+
+        ss << "  pointsTo: { ";
+        for (const auto& item : node->pointsTo) {
+            if (delim) { ss << ", "; }
+            ss << item.target->getID();
+            delim = true;
+        }
+        ss << " }\n";
+
+        for (size_t i = 0; i < node->getOperandsNum(); ++i) {
+            ss << "  op[" << i << "] ptsTo: { ";
+            delim = false;
+            for (const auto& item : node->getOperand(i)->pointsTo) {
+                if (delim) { ss << ", "; }
+                ss << item.target->getID();
+                delim = true;
+            }
+            ss << " }\n";
         }
         return ss.str();
     }
 
-    // TODO: is it okay, if we dont find target in pointsTo, to remove first UNKNKOWN node we find?
+    std::string _tmpStatesToString() const {
+        std::stringstream ss;
+        for (auto& nd : PS->getNodes()) {
+            if (!nd) { continue; }
+            const State* st = getState(nd.get());
+            ss << '<' << nd->getID() << ">\n"
+                << st->_tmpStateToString() << "\n"
+                << _tmpPointsToString(nd.get()) << "\n";
+        }
+        return ss.str();
+    }
+
     bool fixMust(PSNode* nd) {
         if (getState(nd)->empty())
             return false;
@@ -205,16 +234,15 @@ class InvalidatedAnalysis {
 
         if (isFreeType(nd))
             pointsTo = &nd->getOperand(0)->pointsTo;
-        //auto& pointsTo = nd->getOperand(0)->pointsTo;
+
         for (PSNode* target : getState(nd)->mustBeInv) {
             ofs << "(must)<" << nd->getID() << ">:fixing pointsTo for target<" << target->getID() << ">\n";
             if (pointsTo->pointsToTarget(target)) {
                 changed |= pointsTo->removeAny(target);
-                ofs << "something removed\n";
+                ofs << "<" << target->getID() << "> removed from pointsTo set\n";
             }
         }
-        if (changed)
-            ofs << "smth removed\n";
+
         return changed;
     }
 
@@ -233,14 +261,6 @@ class InvalidatedAnalysis {
                 return true;
             }
         }
-        /*
-        auto& maySet = getState(nd)->mayBeInv;
-        for (Pointer ptrStruct : nd->pointsTo) {
-            auto mayIt = maySet.find(ptrStruct.target);
-            if (mayIt != maySet.end()) {
-                return true;
-            }
-        }*/
         return false;
     };
 
@@ -280,9 +300,9 @@ public:
             changed.clear();
         }
         if (debugPrint) ofs << _tmpStatesToString() << '\n';
-        for (auto& nd : PS->getNodes()) {
+        /*for (auto& nd : PS->getNodes()) {
             if (nd) fixPointsTo(nd.get());
-        }
+        }*/
     }
 
 };
