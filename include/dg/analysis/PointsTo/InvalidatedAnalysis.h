@@ -35,11 +35,11 @@ class InvalidatedAnalysis {
             return mustBeInv.empty() && mayBeInv.empty();
         }
 
+        /*
         bool update(State* predState) {
             unsigned mustSizeBefore = mustBeInv.size();
             unsigned maySizeBefore = mayBeInv.size();
-
-            // 1.) copy sets to a new tmp node
+            // 1.) copy sets to a new tmp State
             State copy (mustBeInv, mayBeInv);
 
             // 2.) update node's state
@@ -59,6 +59,15 @@ class InvalidatedAnalysis {
 
             // return true if sizes of sets have changed
             return mustSizeBefore != mustBeInv.size() || maySizeBefore != mayBeInv.size();
+        }
+        */
+
+        bool insertIntoSets(const PSNodePtrSet& mustSet, const PSNodePtrSet& maySet) {
+            unsigned mustSize = mustBeInv.size();
+            unsigned maySize = mayBeInv.size();
+            mustBeInv.insert(mustSet.begin(), mustSet.end());
+            mayBeInv.insert(maySet.begin(), maySet.end());
+            return mustSize != mustBeInv.size() || maySize != mayBeInv.size();
         }
 
         std::string _tmpStateToString() const {
@@ -100,7 +109,6 @@ class InvalidatedAnalysis {
                node->getType() == PSNodeType::INVALIDATE_OBJECT;*/
     }
 
-    // Added temporarily. ( Currently I am focused only on FREE instruction. )
     static inline bool isFreeType(PSNode *node) {
         return node->getType() == PSNodeType::FREE;
     }
@@ -137,11 +145,8 @@ class InvalidatedAnalysis {
                isRelevantNode(node);
     }
 
-
     bool decideMustOrMay(PSNode* node, PSNode* target) {
-
-        if (debugPrint) ofs << "[must or may]\n";
-
+        // if (debugPrint) ofs << "[must or may]\n";
         State* state = getState(node);
         size_t mustSize = state->mustBeInv.size();
         size_t maySize = state->mayBeInv.size();
@@ -152,7 +157,7 @@ class InvalidatedAnalysis {
         } else if (pointsToSize > 1) {
             state->mayBeInv.insert(target);
         }
-        if (debugPrint) ofs << "[inserted target " << target->getID() << "]\n";
+        // if (debugPrint) ofs << "[inserted target " << target->getID() << "]\n";
 
         return mustSize != state->mustBeInv.size() || maySize != state->mayBeInv.size();
     }
@@ -160,7 +165,6 @@ class InvalidatedAnalysis {
     bool processNode(PSNode *node) {
         assert(node && node->getID() < _states.size());
 
-        // if node has not changed -> node now shares a state with its predecessor
         if (noChange(node)) {
             auto pred = node->getSinglePredecessor();
             assert(pred->getID() <_states.size());
@@ -178,16 +182,44 @@ class InvalidatedAnalysis {
                 changed |= decideMustOrMay(node, ptrStruct.target);
             }
         }
+        // 1. get intersection of all pred's musts and union of all pred's mays
+        State tmpCombined = combinePredecessorsStates(node->getPredecessors());
+        // 2. add it to node's State sets
+        changed |= getState(node)->insertIntoSets(tmpCombined.mustBeInv, tmpCombined.mayBeInv);
 
+        /*
         for (PSNode* pred : node->getPredecessors()) {
             if (pred)
                 changed |= getState(node)->update(getState(pred));
-        }
+        }*/
 
         return changed;
     }
 
-    std::string _tmpPointsToString(const PSNode* node) const {
+    State combinePredecessorsStates(const std::vector<PSNode*>& predecessors) const {
+        State state;
+        if (predecessors.empty())
+            return state;
+
+        state.mustBeInv = getState(predecessors.at(0))->mustBeInv;
+        state.mayBeInv = getState(predecessors.at(0))->mayBeInv;
+
+        const State* predState;
+        PSNodePtrSet tmpMust;
+        for (auto it = ++(predecessors.begin()); it != predecessors.end(); ++it) {
+            predState = getState(*it);
+
+            std::set_intersection(state.mustBeInv.begin(), state.mustBeInv.end(),
+                    predState->mustBeInv.begin(), predState->mustBeInv.end(),
+                    std::inserter(tmpMust, tmpMust.end()));
+            std::swap(state.mustBeInv, tmpMust);
+
+            state.mayBeInv.insert(predState->mayBeInv.begin(), predState->mayBeInv.end());
+        }
+        return state;
+    }
+
+    std::string _tmpPointsToToString(const PSNode *node) const {
         std::stringstream ss;
         bool delim = false;
 
@@ -219,26 +251,19 @@ class InvalidatedAnalysis {
             const State* st = getState(nd.get());
             ss << '<' << nd->getID() << ">\n"
                 << st->_tmpStateToString() << "\n"
-                << _tmpPointsToString(nd.get()) << "\n";
+                << _tmpPointsToToString(nd.get()) << "\n";
         }
         return ss.str();
     }
 
     bool fixMust(PSNode* nd) {
-        if (getState(nd)->empty())
-            return false;
-
         bool changed = false;
-
-        auto* pointsTo = &nd->pointsTo;
-
-        if (isFreeType(nd))
-            pointsTo = &nd->getOperand(0)->pointsTo;
+        auto& pointsTo = nd->pointsTo;
 
         for (PSNode* target : getState(nd)->mustBeInv) {
             ofs << "(must)<" << nd->getID() << ">:fixing pointsTo for target<" << target->getID() << ">\n";
-            if (pointsTo->pointsToTarget(target)) {
-                changed |= pointsTo->removeAny(target);
+            if (pointsTo.pointsToTarget(target)) {
+                changed |= pointsTo.removeAny(target);
                 ofs << "<" << target->getID() << "> removed from pointsTo set\n";
             }
         }
@@ -247,9 +272,6 @@ class InvalidatedAnalysis {
     }
 
     bool fixMay(PSNode* nd) {
-        if (getState(nd)->empty())
-            return false;
-
         auto* pointsTo = &nd->pointsTo;
         if (isFreeType(nd))
             pointsTo = &nd->getOperand(0)->pointsTo;
@@ -265,7 +287,15 @@ class InvalidatedAnalysis {
     };
 
     void fixPointsTo(PSNode* nd) {
-        if (fixMust(nd) || fixMay(nd)) {
+        if (getState(nd)->empty()) {
+            //ofs << "<" << nd->getID() << "> has empty State\n";
+            return;
+        }
+
+        // multiple steps to avoid lazy evaluation.
+        bool insertINV = fixMust(nd);
+        insertINV |= fixMay(nd);
+        if (insertINV) {
             ofs << "[ INV inserted into <" << nd->getID() << ">'s pointsTo set]\n";
             nd->pointsTo.add(INVALIDATED);
         }
@@ -300,11 +330,10 @@ public:
             changed.clear();
         }
         if (debugPrint) ofs << _tmpStatesToString() << '\n';
-        /*for (auto& nd : PS->getNodes()) {
+        for (auto& nd : PS->getNodes()) {
             if (nd) fixPointsTo(nd.get());
-        }*/
+        }
     }
-
 };
 
 } // namespace pta
