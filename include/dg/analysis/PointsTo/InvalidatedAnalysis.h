@@ -100,7 +100,6 @@ class InvalidatedAnalysis {
                node->getType() == PSNodeType::INVALIDATE_OBJECT;*/
     }
 
-    // Added temporarily. ( Currently I am focused only on FREE instruction. )
     static inline bool isFreeType(PSNode *node) {
         return node->getType() == PSNodeType::FREE;
     }
@@ -137,11 +136,8 @@ class InvalidatedAnalysis {
                isRelevantNode(node);
     }
 
-
     bool decideMustOrMay(PSNode* node, PSNode* target) {
-
-        if (debugPrint) ofs << "[must or may]\n";
-
+        // if (debugPrint) ofs << "[must or may]\n";
         State* state = getState(node);
         size_t mustSize = state->mustBeInv.size();
         size_t maySize = state->mayBeInv.size();
@@ -152,7 +148,7 @@ class InvalidatedAnalysis {
         } else if (pointsToSize > 1) {
             state->mayBeInv.insert(target);
         }
-        if (debugPrint) ofs << "[inserted target " << target->getID() << "]\n";
+        // if (debugPrint) ofs << "[inserted target " << target->getID() << "]\n";
 
         return mustSize != state->mustBeInv.size() || maySize != state->mayBeInv.size();
     }
@@ -187,7 +183,7 @@ class InvalidatedAnalysis {
         return changed;
     }
 
-    std::string _tmpPointsToString(const PSNode* node) const {
+    std::string _tmpPointsToToString(const PSNode *node) const {
         std::stringstream ss;
         bool delim = false;
 
@@ -219,26 +215,19 @@ class InvalidatedAnalysis {
             const State* st = getState(nd.get());
             ss << '<' << nd->getID() << ">\n"
                 << st->_tmpStateToString() << "\n"
-                << _tmpPointsToString(nd.get()) << "\n";
+                << _tmpPointsToToString(nd.get()) << "\n";
         }
         return ss.str();
     }
 
     bool fixMust(PSNode* nd) {
-        if (getState(nd)->empty())
-            return false;
-
         bool changed = false;
-
-        auto* pointsTo = &nd->pointsTo;
-
-        if (isFreeType(nd))
-            pointsTo = &nd->getOperand(0)->pointsTo;
+        auto& pointsTo = nd->pointsTo;
 
         for (PSNode* target : getState(nd)->mustBeInv) {
             ofs << "(must)<" << nd->getID() << ">:fixing pointsTo for target<" << target->getID() << ">\n";
-            if (pointsTo->pointsToTarget(target)) {
-                changed |= pointsTo->removeAny(target);
+            if (pointsTo.pointsToTarget(target)) {
+                changed |= pointsTo.removeAny(target);
                 ofs << "<" << target->getID() << "> removed from pointsTo set\n";
             }
         }
@@ -247,9 +236,6 @@ class InvalidatedAnalysis {
     }
 
     bool fixMay(PSNode* nd) {
-        if (getState(nd)->empty())
-            return false;
-
         auto* pointsTo = &nd->pointsTo;
         if (isFreeType(nd))
             pointsTo = &nd->getOperand(0)->pointsTo;
@@ -265,7 +251,14 @@ class InvalidatedAnalysis {
     };
 
     void fixPointsTo(PSNode* nd) {
-        if (fixMust(nd) || fixMay(nd)) {
+        if (getState(nd)->empty()) {
+            ofs << "<" << nd->getID() << "> has empty State\n";
+            return;
+        }
+
+        bool insertINV = fixMust(nd);
+        insertINV |= fixMay(nd);
+        if (insertINV) {
             ofs << "[ INV inserted into <" << nd->getID() << ">'s pointsTo set]\n";
             nd->pointsTo.add(INVALIDATED);
         }
@@ -300,9 +293,9 @@ public:
             changed.clear();
         }
         if (debugPrint) ofs << _tmpStatesToString() << '\n';
-        /*for (auto& nd : PS->getNodes()) {
+        for (auto& nd : PS->getNodes()) {
             if (nd) fixPointsTo(nd.get());
-        }*/
+        }
     }
 
 };
