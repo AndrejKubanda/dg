@@ -35,11 +35,11 @@ class InvalidatedAnalysis {
             return mustBeInv.empty() && mayBeInv.empty();
         }
 
+        /*
         bool update(State* predState) {
             unsigned mustSizeBefore = mustBeInv.size();
             unsigned maySizeBefore = mayBeInv.size();
-
-            // 1.) copy sets to a new tmp node
+            // 1.) copy sets to a new tmp State
             State copy (mustBeInv, mayBeInv);
 
             // 2.) update node's state
@@ -59,6 +59,15 @@ class InvalidatedAnalysis {
 
             // return true if sizes of sets have changed
             return mustSizeBefore != mustBeInv.size() || maySizeBefore != mayBeInv.size();
+        }
+        */
+
+        bool insertIntoSets(const PSNodePtrSet& mustSet, const PSNodePtrSet& maySet) {
+            unsigned mustSize = mustBeInv.size();
+            unsigned maySize = mayBeInv.size();
+            mustBeInv.insert(mustSet.begin(), mustSet.end());
+            mayBeInv.insert(maySet.begin(), maySet.end());
+            return mustSize != mustBeInv.size() || maySize != mayBeInv.size();
         }
 
         std::string _tmpStateToString() const {
@@ -156,7 +165,6 @@ class InvalidatedAnalysis {
     bool processNode(PSNode *node) {
         assert(node && node->getID() < _states.size());
 
-        // if node has not changed -> node now shares a state with its predecessor
         if (noChange(node)) {
             auto pred = node->getSinglePredecessor();
             assert(pred->getID() <_states.size());
@@ -174,13 +182,41 @@ class InvalidatedAnalysis {
                 changed |= decideMustOrMay(node, ptrStruct.target);
             }
         }
+        // 1. get intersection of all pred's must and union of all pred's may
+        State combined = combinePredecessorsStates(node->getPredecessors());
+        // 2. add it to node's State sets
+        changed |= getState(node)->insertIntoSets(combined.mustBeInv, combined.mayBeInv);
 
+        /*
         for (PSNode* pred : node->getPredecessors()) {
             if (pred)
                 changed |= getState(node)->update(getState(pred));
-        }
+        }*/
 
         return changed;
+    }
+
+    State combinePredecessorsStates(const std::vector<PSNode*>& predecessors) const {
+        State state;
+        if (predecessors.empty())
+            return state;
+
+        state.mustBeInv = getState(predecessors.at(0))->mustBeInv;
+        state.mayBeInv = getState(predecessors.at(0))->mayBeInv;
+
+        const State* predState;
+        PSNodePtrSet tmpMust;
+        for (auto it = ++(predecessors.begin()); it != predecessors.end(); ++it) {
+            predState = getState(*it);
+
+            std::set_intersection(state.mustBeInv.begin(), state.mustBeInv.end(),
+                    predState->mustBeInv.begin(), predState->mustBeInv.end(),
+                    std::inserter(tmpMust, tmpMust.end()));
+            std::swap(state.mustBeInv, tmpMust);
+
+            state.mayBeInv.insert(predState->mayBeInv.begin(), predState->mayBeInv.end());
+        }
+        return state;
     }
 
     std::string _tmpPointsToToString(const PSNode *node) const {
@@ -297,7 +333,6 @@ public:
             if (nd) fixPointsTo(nd.get());
         }
     }
-
 };
 
 } // namespace pta
