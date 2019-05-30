@@ -182,10 +182,10 @@ class InvalidatedAnalysis {
                 changed |= decideMustOrMay(node, ptrStruct.target);
             }
         }
-        // 1. get intersection of all pred's must and union of all pred's may
-        State combined = combinePredecessorsStates(node->getPredecessors());
+        // 1. get intersection of all pred's musts and union of all pred's mays
+        State tmpCombined = combinePredecessorsStates(node->getPredecessors());
         // 2. add it to node's State sets
-        changed |= getState(node)->insertIntoSets(combined.mustBeInv, combined.mayBeInv);
+        changed |= getState(node)->insertIntoSets(tmpCombined.mustBeInv, tmpCombined.mayBeInv);
 
         /*
         for (PSNode* pred : node->getPredecessors()) {
@@ -288,10 +288,11 @@ class InvalidatedAnalysis {
 
     void fixPointsTo(PSNode* nd) {
         if (getState(nd)->empty()) {
-            ofs << "<" << nd->getID() << "> has empty State\n";
+            //ofs << "<" << nd->getID() << "> has empty State\n";
             return;
         }
 
+        // multiple steps to avoid lazy evaluation.
         bool insertINV = fixMust(nd);
         insertINV |= fixMay(nd);
         if (insertINV) {
