@@ -101,8 +101,7 @@ class InvalidatedAnalysis {
     std::vector<std::unique_ptr<State>> _states;
 
     static inline bool isRelevantNode(PSNode *node) {
-        return /*node->getType() == PSNodeType::STORE ||*/
-               node->getType() == PSNodeType::ALLOC ||
+        return node->getType() == PSNodeType::ALLOC ||
                node->getType() == PSNodeType::DYN_ALLOC ||
                node->getType() == PSNodeType::FREE;
                /* || node->getType() == PSNodeType::INVALIDATE_LOCALS ||
@@ -176,27 +175,21 @@ class InvalidatedAnalysis {
         bool changed = false;
 
         if (isFreeType(node)) {
-            if (debugPrint) ofs << "[" << node->getID() <<" is FREE]\n";
-            for (const auto& ptrStruct : node->getOperand(0)->pointsTo) { // we want .getOperand(0) - zero-th operand's points to set
-                if (debugPrint) ofs << "[points to: " << ptrStruct.target->getID() << "]\n";
+            for (const auto& ptrStruct : node->getOperand(0)->pointsTo) {
                 changed |= decideMustOrMay(node, ptrStruct.target);
             }
         }
         // 1. get intersection of all pred's musts and union of all pred's mays
+        // TODO: delete items from MAY which are in MUST
         State tmpCombined = combinePredecessorsStates(node->getPredecessors());
         // 2. add it to node's State sets
         changed |= getState(node)->insertIntoSets(tmpCombined.mustBeInv, tmpCombined.mayBeInv);
 
-        /*
-        for (PSNode* pred : node->getPredecessors()) {
-            if (pred)
-                changed |= getState(node)->update(getState(pred));
-        }*/
-
+        if (changed) ofs << "changed: " << node->getID() << "\n";
         return changed;
     }
 
-    State combinePredecessorsStates(const std::vector<PSNode*>& predecessors) const {
+    State combinePredecessorsStates(const std::vector<PSNode*>& predecessors) {
         State state;
         if (predecessors.empty())
             return state;
@@ -206,13 +199,15 @@ class InvalidatedAnalysis {
 
         const State* predState;
         PSNodePtrSet tmpMust;
+
         for (auto it = ++(predecessors.begin()); it != predecessors.end(); ++it) {
             predState = getState(*it);
-
             std::set_intersection(state.mustBeInv.begin(), state.mustBeInv.end(),
                     predState->mustBeInv.begin(), predState->mustBeInv.end(),
-                    std::inserter(tmpMust, tmpMust.end()));
+                    std::inserter(tmpMust, tmpMust.begin()));
+
             std::swap(state.mustBeInv, tmpMust);
+            tmpMust.clear();
 
             state.mayBeInv.insert(predState->mayBeInv.begin(), predState->mayBeInv.end());
         }
@@ -312,15 +307,28 @@ public:
     }
 
     void run() {
+        /*
+         * new way. To solve the situation when nd 33 with pred 32 and 39 doesnt receive correct MUST set intersection
+         * of predecessors because 39 has not been processed yet.
+         */
+        bool hasChanged = true;
+        while (hasChanged) {
+            hasChanged = false;
+            for (auto& uptrNd : PS->getNodes()) {
+                if (uptrNd)
+                    hasChanged |= processNode(uptrNd.get());
+            }
+        }
+
+        /*
         std::vector<PSNode *> to_process;
         std::vector<PSNode *> changed;
 
-        // [0] is nullptr
         for (auto& nd : PS->getNodes()) {
             if (nd)
                 to_process.push_back(nd.get());
         }
-
+                // old way
         while(!to_process.empty()) {
             for (auto* nd : to_process) {
                 if (nd && processNode(nd))
@@ -329,6 +337,8 @@ public:
             to_process.swap(changed);
             changed.clear();
         }
+        */
+
         if (debugPrint) ofs << _tmpStatesToString() << '\n';
         for (auto& nd : PS->getNodes()) {
             if (nd) fixPointsTo(nd.get());
