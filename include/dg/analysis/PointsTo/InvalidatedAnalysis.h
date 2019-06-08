@@ -21,6 +21,7 @@ class InvalidatedAnalysis {
     using PSNodePtrSet = std::set<PSNode *>;
 
     struct State {
+        //friend class InvalidatedAnalysis;
         PSNodePtrSet mustBeInv{};
         PSNodePtrSet mayBeInv{};
         /*
@@ -30,6 +31,14 @@ class InvalidatedAnalysis {
 
         State() = default;
         State(PSNodePtrSet must, PSNodePtrSet may) : mustBeInv(std::move(must)), mayBeInv(std::move(may)) {}
+
+        bool operator==(const State& other) {
+            return mustBeInv == other.mustBeInv && mayBeInv == other.mayBeInv;
+        }
+
+        bool operator!=(const State& other) {
+            return !(*this == other);
+        }
 
         bool empty() {
             return mustBeInv.empty() && mayBeInv.empty();
@@ -72,7 +81,6 @@ class InvalidatedAnalysis {
 
         std::string _tmpStateToString() const {
             std::stringstream ss;
-
             ss << "MUST: { ";
             bool delim = false;
             for (auto& item : mustBeInv) {
@@ -92,6 +100,60 @@ class InvalidatedAnalysis {
             ss << " }";
             return ss.str();
         }
+
+        /**
+         *  Returns wheter State sets have changed.
+         */
+        bool updateState(const std::vector<PSNode*>& predecessors, InvalidatedAnalysis* invAn) {
+            State stateBefore = *this;
+            PSNodePtrSet predMust = absIntersection(predecessors, invAn);
+            mustBeInv.insert(predMust.begin(), predMust.end()); // MUST OK
+
+            PSNodePtrSet predAbsUnion = absUnion(predecessors, invAn);
+            predAbsUnion.insert(mayBeInv.begin(), mayBeInv.end()); // predUnion + mayBeInv
+            PSNodePtrSet tmp;
+            std::set_difference(predAbsUnion.begin(), predAbsUnion.end(), mustBeInv.begin(), mustBeInv.end(),
+                    std::inserter(tmp, tmp.begin())); // {predUnion + mayBeInv} - {mustBeInv}
+            std::swap(tmp, mayBeInv);
+            return *this != stateBefore;
+        }
+
+    private:
+        static PSNodePtrSet absUnion(const std::vector<PSNode*>& predecessors, InvalidatedAnalysis* invAn) {
+            PSNodePtrSet result;
+            if (predecessors.empty())
+                return result;
+
+            PSNodePtrSet* mustSet;
+            PSNodePtrSet* maySet;
+
+            for (auto* pred : predecessors) {
+                mustSet = &invAn->getState(pred)->mustBeInv;
+                maySet = &invAn->getState(pred)->mayBeInv;
+                result.insert(mustSet->begin(), mustSet->end());
+                result.insert(maySet->begin(), maySet->end());
+            }
+            return result;
+        }
+
+        static PSNodePtrSet absIntersection(const std::vector<PSNode*>& predecessors, InvalidatedAnalysis* invAn) {
+            PSNodePtrSet result;
+            if (predecessors.empty())
+                return result;
+
+            State* st = invAn->getState(predecessors.at(0));
+            result.insert(st->mustBeInv.begin(), st->mustBeInv.end());
+            PSNodePtrSet tmp;
+
+            for (auto it = ++(predecessors.begin()); it != predecessors.end(); ++it) {
+                st = invAn->getState(*it);
+                std::set_intersection(result.begin(), result.end(), st->mustBeInv.begin(), st->mustBeInv.end(), std::inserter(tmp, tmp.begin()));
+                std::swap(result, tmp);
+                tmp.clear();
+            }
+
+            return result;
+        }
     };
 
     PointerSubgraph* PS { nullptr };
@@ -108,7 +170,7 @@ class InvalidatedAnalysis {
                node->getType() == PSNodeType::INVALIDATE_OBJECT;*/
     }
 
-    static inline bool isFreeType(PSNode *node) {
+    static inline bool isFreeType(const PSNode *node) {
         return node->getType() == PSNodeType::FREE;
     }
 
@@ -179,74 +241,36 @@ class InvalidatedAnalysis {
                 changed |= decideMustOrMay(node, ptrStruct.target);
             }
         }
-        // 1. get intersection of all pred's musts and union of all pred's mays
-        // TODO: delete items from MAY which are in MUST
-        State tmpCombined = combinePredecessorsStates(node->getPredecessors());
-        // 2. add it to node's State sets
-        changed |= getState(node)->insertIntoSets(tmpCombined.mustBeInv, tmpCombined.mayBeInv);
+
+        changed |= getState(node)->updateState(node->getPredecessors(), this);
 
         if (changed) ofs << "changed: " << node->getID() << "\n";
         return changed;
     }
 
-    State combinePredecessorsStates(const std::vector<PSNode*>& predecessors) {
-        State state;
-        if (predecessors.empty())
-            return state;
-
-        state.mustBeInv = getState(predecessors.at(0))->mustBeInv;
-        state.mayBeInv = getState(predecessors.at(0))->mayBeInv;
-
-        const State* predState;
-        PSNodePtrSet tmpMust;
-
-        for (auto it = ++(predecessors.begin()); it != predecessors.end(); ++it) {
-            predState = getState(*it);
-            std::set_intersection(state.mustBeInv.begin(), state.mustBeInv.end(),
-                    predState->mustBeInv.begin(), predState->mustBeInv.end(),
-                    std::inserter(tmpMust, tmpMust.begin()));
-
-            std::swap(state.mustBeInv, tmpMust);
-            tmpMust.clear();
-
-            state.mayBeInv.insert(predState->mayBeInv.begin(), predState->mayBeInv.end());
-        }
-        return state;
-    }
-
     std::string _tmpPointsToToString(const PSNode *node) const {
         std::stringstream ss;
         bool delim = false;
-
-        ss << "  pointsTo: { ";
+        if (isFreeType(node))
+            ss << "[FREE] ";
+        ss << "pointsTo: { ";
         for (const auto& item : node->pointsTo) {
             if (delim) { ss << ", "; }
             ss << item.target->getID();
             delim = true;
         }
         ss << " }\n";
-
-        for (size_t i = 0; i < node->getOperandsNum(); ++i) {
-            ss << "  op[" << i << "] ptsTo: { ";
-            delim = false;
-            for (const auto& item : node->getOperand(i)->pointsTo) {
-                if (delim) { ss << ", "; }
-                ss << item.target->getID();
-                delim = true;
-            }
-            ss << " }\n";
-        }
         return ss.str();
     }
 
     std::string _tmpStatesToString() const {
         std::stringstream ss;
         for (auto& nd : PS->getNodes()) {
-            if (!nd) { continue; }
+            if (!nd)
+                continue;
             const State* st = getState(nd.get());
-            ss << '<' << nd->getID() << ">\n"
-                << st->_tmpStateToString() << "\n"
-                << _tmpPointsToToString(nd.get()) << "\n";
+            ss << '<' << nd->getID() << "> " << _tmpPointsToToString(nd.get()) << '\n'
+                << st->_tmpStateToString() << "\n\n";
         }
         return ss.str();
     }
@@ -308,10 +332,12 @@ public:
 
     void run() {
         /*
-         * new way. To solve the situation when nd 33 with pred 32 and 39 doesnt receive correct MUST set intersection
+         * new way. To solve the situation when nd 33 with preds 32, 39 doesnt receive correct MUST set intersection
          * of predecessors because 39 has not been processed yet.
          */
         bool hasChanged = true;
+        // major change to algorithm, much less efficient.
+        // Is there a way how to keep the efficience of the previous approach
         while (hasChanged) {
             hasChanged = false;
             for (auto& uptrNd : PS->getNodes()) {
@@ -321,6 +347,7 @@ public:
         }
 
         /*
+        // old way
         std::vector<PSNode *> to_process;
         std::vector<PSNode *> changed;
 
@@ -328,7 +355,7 @@ public:
             if (nd)
                 to_process.push_back(nd.get());
         }
-                // old way
+
         while(!to_process.empty()) {
             for (auto* nd : to_process) {
                 if (nd && processNode(nd))
