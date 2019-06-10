@@ -291,13 +291,11 @@ class InvalidatedAnalysis {
     }
 
     bool fixMay(PSNode* nd) {
-        auto* pointsTo = &nd->pointsTo;
-        if (isFreeType(nd))
-            pointsTo = &nd->getOperand(0)->pointsTo;
+        auto& pointsTo = nd->pointsTo;
 
         for (PSNode* target : getState(nd)->mayBeInv) {
             ofs << "(may)<" << nd->getID() << ">:fixing pointsTo for target<" << target->getID() << ">\n";
-            if (pointsTo->pointsToTarget(target)) {
+            if (pointsTo.pointsToTarget(target)) {
                 ofs << "(may)<" << nd->getID() << ">: target<" << target->getID() << "> found\n";
                 return true;
             }
@@ -335,6 +333,7 @@ public:
          * new way. To solve the situation when nd 33 with preds 32, 39 doesnt receive correct MUST set intersection
          * of predecessors because 39 has not been processed yet.
          */
+        /*
         bool hasChanged = true;
         // major change to algorithm, much less efficient.
         // Is there a way how to keep the efficience of the previous approach
@@ -345,8 +344,9 @@ public:
                     hasChanged |= processNode(uptrNd.get());
             }
         }
+        */
 
-        /*
+        // /*
         // old way
         std::vector<PSNode *> to_process;
         std::vector<PSNode *> changed;
@@ -364,7 +364,7 @@ public:
             to_process.swap(changed);
             changed.clear();
         }
-        */
+        // */
 
         if (debugPrint) ofs << _tmpStatesToString() << '\n';
         for (auto& nd : PS->getNodes()) {
