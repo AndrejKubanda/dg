@@ -329,24 +329,6 @@ public:
     }
 
     void run() {
-        /*
-         * new way. To solve the situation when nd 33 with preds 32, 39 doesnt receive correct MUST set intersection
-         * of predecessors because 39 has not been processed yet.
-         */
-        /*
-        bool hasChanged = true;
-        // major change to algorithm, much less efficient.
-        // Is there a way how to keep the efficience of the previous approach
-        while (hasChanged) {
-            hasChanged = false;
-            for (auto& uptrNd : PS->getNodes()) {
-                if (uptrNd)
-                    hasChanged |= processNode(uptrNd.get());
-            }
-        }
-        */
-
-        // /*
         // old way
         std::vector<PSNode *> to_process;
         std::vector<PSNode *> changed;
@@ -359,12 +341,12 @@ public:
         while(!to_process.empty()) {
             for (auto* nd : to_process) {
                 if (nd && processNode(nd))
+                    // TODO : add not only current node but each node that is reachable from current Node
                     changed.push_back(nd);
             }
             to_process.swap(changed);
             changed.clear();
         }
-        // */
 
         if (debugPrint) ofs << _tmpStatesToString() << '\n';
         for (auto& nd : PS->getNodes()) {
