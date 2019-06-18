@@ -44,33 +44,6 @@ class InvalidatedAnalysis {
             return mustBeInv.empty() && mayBeInv.empty();
         }
 
-        /*
-        bool update(State* predState) {
-            unsigned mustSizeBefore = mustBeInv.size();
-            unsigned maySizeBefore = mayBeInv.size();
-            // 1.) copy sets to a new tmp State
-            State copy (mustBeInv, mayBeInv);
-
-            // 2.) update node's state
-            // MUST: intersection
-            PSNodePtrSet tmp;
-            std::set_intersection(mustBeInv.begin(), mustBeInv.end(),
-                    predState->mustBeInv.begin(), predState->mustBeInv.end(),
-                    std::inserter(tmp, tmp.end()));
-            std::swap(tmp, mustBeInv);
-
-            // MAY: union
-            mayBeInv.insert(predState->mayBeInv.begin(), predState->mayBeInv.end());
-
-            // 3.) add (union) copy sets to node's state's set
-            mustBeInv.insert(copy.mustBeInv.begin(), copy.mustBeInv.end());
-            mayBeInv.insert(copy.mayBeInv.begin(), copy.mayBeInv.end());
-
-            // return true if sizes of sets have changed
-            return mustSizeBefore != mustBeInv.size() || maySizeBefore != mayBeInv.size();
-        }
-        */
-
         bool insertIntoSets(const PSNodePtrSet& mustSet, const PSNodePtrSet& maySet) {
             unsigned mustSize = mustBeInv.size();
             unsigned maySize = mayBeInv.size();
@@ -102,15 +75,15 @@ class InvalidatedAnalysis {
         }
 
         /**
-         *  Returns wheter State sets have changed.
+         *  Returns whether State sets have changed.
          */
         bool updateState(const std::vector<PSNode*>& predecessors, InvalidatedAnalysis* invAn) {
             State stateBefore = *this;
             PSNodePtrSet predMust = absIntersection(predecessors, invAn);
-            mustBeInv.insert(predMust.begin(), predMust.end()); // MUST OK
+            mustBeInv.insert(predMust.begin(), predMust.end());
 
             PSNodePtrSet predAbsUnion = absUnion(predecessors, invAn);
-            predAbsUnion.insert(mayBeInv.begin(), mayBeInv.end()); // predUnion + mayBeInv
+            predAbsUnion.insert(mayBeInv.begin(), mayBeInv.end());
             PSNodePtrSet tmp;
             std::set_difference(predAbsUnion.begin(), predAbsUnion.end(), mustBeInv.begin(), mustBeInv.end(),
                     std::inserter(tmp, tmp.begin())); // {predUnion + mayBeInv} - {mustBeInv}
@@ -304,10 +277,8 @@ class InvalidatedAnalysis {
     };
 
     void fixPointsTo(PSNode* nd) {
-        if (getState(nd)->empty()) {
-            //ofs << "<" << nd->getID() << "> has empty State\n";
+        if (getState(nd)->empty())
             return;
-        }
 
         // multiple steps to avoid lazy evaluation.
         bool insertINV = fixMust(nd);
@@ -317,6 +288,25 @@ class InvalidatedAnalysis {
             nd->pointsTo.add(INVALIDATED);
         }
     }
+
+    std::vector<PSNode*> getReachableNodes(PSNode* node) const {
+        std::vector<PSNode*> reachable;
+        std::vector<bool> visited(_states.size());
+        reachablesRecursion(node, reachable, visited);
+        return reachable;
+    }
+
+    void reachablesRecursion(PSNode* currentNode, std::vector<PSNode*>& reachable, std::vector<bool>& visited) const {
+        visited.at(currentNode->getID()) = true;
+        reachable.push_back(currentNode);
+
+        for (auto* suc : currentNode->getSuccessors()) {
+            if (suc && !visited.at(suc->getID())) {
+                reachablesRecursion(suc, reachable, visited);
+            }
+        }
+    }
+
 
 public:
 
@@ -329,7 +319,6 @@ public:
     }
 
     void run() {
-        // old way
         std::vector<PSNode *> to_process;
         std::vector<PSNode *> changed;
 
@@ -340,15 +329,17 @@ public:
 
         while(!to_process.empty()) {
             for (auto* nd : to_process) {
-                if (nd && processNode(nd))
-                    // TODO : add not only current node but each node that is reachable from current Node
-                    changed.push_back(nd);
+                if (nd && processNode(nd)) {
+                    auto reachable = getReachableNodes(nd);
+                    changed.insert(changed.end(), reachable.begin(), reachable.end());
+                }
             }
             to_process.swap(changed);
             changed.clear();
         }
 
         if (debugPrint) ofs << _tmpStatesToString() << '\n';
+
         for (auto& nd : PS->getNodes()) {
             if (nd) fixPointsTo(nd.get());
         }
