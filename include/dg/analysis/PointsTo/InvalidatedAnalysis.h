@@ -17,11 +17,11 @@ class InvalidatedAnalysis {
 #define debugPrint 1
 
     std::ofstream ofs = std::ofstream("invOutput");
+    size_t numOfProcessedNodes = 0;
 
     using PSNodePtrSet = std::set<PSNode *>;
 
     struct State {
-        //friend class InvalidatedAnalysis;
         PSNodePtrSet mustBeInv{};
         PSNodePtrSet mayBeInv{};
         /*
@@ -198,6 +198,7 @@ class InvalidatedAnalysis {
 
     bool processNode(PSNode *node) {
         assert(node && node->getID() < _states.size());
+        numOfProcessedNodes++;
 
         if (noChange(node)) {
             auto pred = node->getSinglePredecessor();
@@ -216,8 +217,6 @@ class InvalidatedAnalysis {
         }
 
         changed |= getState(node)->updateState(node->getPredecessors(), this);
-
-        if (changed) ofs << "changed: " << node->getID() << "\n";
         return changed;
     }
 
@@ -289,6 +288,7 @@ class InvalidatedAnalysis {
         }
     }
 
+    // this method would make more sense had it been a method of PSNode class
     std::vector<PSNode*> getReachableNodes(PSNode* node) const {
         std::vector<PSNode*> reachable;
         std::vector<bool> visited(_states.size());
@@ -331,6 +331,7 @@ public:
             for (auto* nd : to_process) {
                 if (nd && processNode(nd)) {
                     auto reachable = getReachableNodes(nd);
+                    if (debugPrint) ofs << "changed: " << nd->getID() << " (reachables " << reachable.size() << ")\n";
                     changed.insert(changed.end(), reachable.begin(), reachable.end());
                 }
             }
@@ -338,7 +339,7 @@ public:
             changed.clear();
         }
 
-        if (debugPrint) ofs << _tmpStatesToString() << '\n';
+        if (debugPrint) ofs << "processed: " << numOfProcessedNodes << "\n\n" << _tmpStatesToString() << '\n';
 
         for (auto& nd : PS->getNodes()) {
             if (nd) fixPointsTo(nd.get());
