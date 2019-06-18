@@ -138,13 +138,9 @@ class InvalidatedAnalysis {
     static inline bool isRelevantNode(PSNode *node) {
         return node->getType() == PSNodeType::ALLOC ||
                node->getType() == PSNodeType::DYN_ALLOC ||
-               node->getType() == PSNodeType::FREE;
-               /* || node->getType() == PSNodeType::INVALIDATE_LOCALS ||
+               node->getType() == PSNodeType::FREE ||
+               node->getType() == PSNodeType::INVALIDATE_LOCALS; /* ||
                node->getType() == PSNodeType::INVALIDATE_OBJECT;*/
-    }
-
-    static inline bool isFreeType(const PSNode *node) {
-        return node->getType() == PSNodeType::FREE;
     }
 
     static inline bool noChange(PSNode *node) {
@@ -210,7 +206,7 @@ class InvalidatedAnalysis {
 
         bool changed = false;
 
-        if (isFreeType(node)) {
+        if (isa<PSNodeType::FREE>(node)) {
             for (const auto& ptrStruct : node->getOperand(0)->pointsTo) {
                 changed |= decideMustOrMay(node, ptrStruct.target);
             }
@@ -223,7 +219,7 @@ class InvalidatedAnalysis {
     std::string _tmpPointsToToString(const PSNode *node) const {
         std::stringstream ss;
         bool delim = false;
-        if (isFreeType(node))
+        if (isa<PSNodeType::FREE>(const_cast<PSNode*>(node)))
             ss << "[FREE] ";
         ss << "pointsTo: { ";
         for (const auto& item : node->pointsTo) {
@@ -284,7 +280,7 @@ class InvalidatedAnalysis {
         insertINV |= fixMay(nd);
         if (insertINV) {
             ofs << "[ INV inserted into <" << nd->getID() << ">'s pointsTo set]\n";
-            nd->pointsTo.add(INVALIDATED);
+            nd->pointsTo.add(INVALIDATED, 0);
         }
     }
 
