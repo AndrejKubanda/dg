@@ -17,11 +17,11 @@ class InvalidatedAnalysis {
 #define debugPrint 1
 
     std::ofstream ofs = std::ofstream("invOutput");
+    size_t numOfProcessedNodes = 0;
 
     using PSNodePtrSet = std::set<PSNode *>;
 
     struct State {
-        //friend class InvalidatedAnalysis;
         PSNodePtrSet mustBeInv{};
         PSNodePtrSet mayBeInv{};
         /*
@@ -138,13 +138,9 @@ class InvalidatedAnalysis {
     static inline bool isRelevantNode(PSNode *node) {
         return node->getType() == PSNodeType::ALLOC ||
                node->getType() == PSNodeType::DYN_ALLOC ||
-               node->getType() == PSNodeType::FREE;
-               /* || node->getType() == PSNodeType::INVALIDATE_LOCALS ||
+               node->getType() == PSNodeType::FREE ||
+               node->getType() == PSNodeType::INVALIDATE_LOCALS; /* ||
                node->getType() == PSNodeType::INVALIDATE_OBJECT;*/
-    }
-
-    static inline bool isFreeType(const PSNode *node) {
-        return node->getType() == PSNodeType::FREE;
     }
 
     static inline bool noChange(PSNode *node) {
@@ -198,6 +194,7 @@ class InvalidatedAnalysis {
 
     bool processNode(PSNode *node) {
         assert(node && node->getID() < _states.size());
+        numOfProcessedNodes++;
 
         if (noChange(node)) {
             auto pred = node->getSinglePredecessor();
@@ -209,22 +206,20 @@ class InvalidatedAnalysis {
 
         bool changed = false;
 
-        if (isFreeType(node)) {
+        if (isa<PSNodeType::FREE>(node)) {
             for (const auto& ptrStruct : node->getOperand(0)->pointsTo) {
                 changed |= decideMustOrMay(node, ptrStruct.target);
             }
         }
 
         changed |= getState(node)->updateState(node->getPredecessors(), this);
-
-        if (changed) ofs << "changed: " << node->getID() << "\n";
         return changed;
     }
 
     std::string _tmpPointsToToString(const PSNode *node) const {
         std::stringstream ss;
         bool delim = false;
-        if (isFreeType(node))
+        if (isa<PSNodeType::FREE>(const_cast<PSNode*>(node)))
             ss << "[FREE] ";
         ss << "pointsTo: { ";
         for (const auto& item : node->pointsTo) {
@@ -285,10 +280,11 @@ class InvalidatedAnalysis {
         insertINV |= fixMay(nd);
         if (insertINV) {
             ofs << "[ INV inserted into <" << nd->getID() << ">'s pointsTo set]\n";
-            nd->pointsTo.add(INVALIDATED);
+            nd->pointsTo.add(INVALIDATED, 0);
         }
     }
 
+    // this method would make more sense had it been a method of PSNode class
     std::vector<PSNode*> getReachableNodes(PSNode* node) const {
         std::vector<PSNode*> reachable;
         std::vector<bool> visited(_states.size());
@@ -331,6 +327,7 @@ public:
             for (auto* nd : to_process) {
                 if (nd && processNode(nd)) {
                     auto reachable = getReachableNodes(nd);
+                    if (debugPrint) ofs << "changed: " << nd->getID() << " (reachables " << reachable.size() << ")\n";
                     changed.insert(changed.end(), reachable.begin(), reachable.end());
                 }
             }
@@ -338,7 +335,7 @@ public:
             changed.clear();
         }
 
-        if (debugPrint) ofs << _tmpStatesToString() << '\n';
+        if (debugPrint) ofs << "processed: " << numOfProcessedNodes << "\n\n" << _tmpStatesToString() << '\n';
 
         for (auto& nd : PS->getNodes()) {
             if (nd) fixPointsTo(nd.get());
