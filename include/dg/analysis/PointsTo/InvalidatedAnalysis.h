@@ -2,7 +2,7 @@
 #define _DG_INVALIDATED_ANALYSIS_H_
 
 #include <set>
-#include "PointerSubgraph.h"
+#include "PointerGraph.h"
 #include "PSNode.h"
 #include <algorithm>
 #include <memory>
@@ -129,7 +129,7 @@ class InvalidatedAnalysis {
         }
     };
 
-    PointerSubgraph* PS { nullptr };
+    PointerGraph* PS { nullptr };
 
     // mapping from PSNode's ID to States
     std::vector<State *> _mapping;
@@ -137,7 +137,7 @@ class InvalidatedAnalysis {
 
     static inline bool isRelevantNode(PSNode *node) {
         return node->getType() == PSNodeType::ALLOC ||
-               node->getType() == PSNodeType::DYN_ALLOC ||
+               /*node->getType() == PSNodeType::DYN_ALLOC ||*/
                node->getType() == PSNodeType::FREE ||
                node->getType() == PSNodeType::INVALIDATE_LOCALS; /* ||
                node->getType() == PSNodeType::INVALIDATE_OBJECT;*/
@@ -306,7 +306,7 @@ class InvalidatedAnalysis {
 
 public:
 
-    explicit InvalidatedAnalysis(PointerSubgraph *ps)
+    explicit InvalidatedAnalysis(PointerGraph *ps)
     : PS(ps), _mapping(ps->size()), _states(ps->size()) {
         for (size_t i = 1; i < ps->size(); ++i) {
             _states[i] = llvm::make_unique<State>();

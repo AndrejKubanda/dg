@@ -136,36 +136,7 @@ public:
         }
     }
 
-    virtual void run()
-    {
-        // do preprocessing and queue the nodes
-        preprocess();
-        initialize_queue();
-
-        // check that the current state of pointer analysis makes sense
-        sanityCheck();
-
-        // do fixpoint
-        do {
-            iteration();
-            queue_changed();
-        } while (!to_process.empty());
-
-        assert(to_process.empty());
-        assert(changed.empty());
-
-        // NOTE: With flow-insensitive analysis, it may happen that
-        // we have not reached the fixpoint here. This is beacuse
-        // we queue only reachable nodes from the nodes that changed
-        // something. So if in the rechable nodes something generates
-        // new information, than this information could be added to some
-        // node in a new iteration over all nodes. But this information
-        // can never get to that node in runtime, since that node is
-        // unreachable from the point where the information is
-        // generated, so this is OK.
-
-        sanityCheck();
-    }
+    virtual void run();
 
     // generic error
     // @msg - message for the user
