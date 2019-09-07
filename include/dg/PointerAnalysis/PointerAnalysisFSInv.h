@@ -3,6 +3,7 @@
 
 #include <cassert>
 #include "PointerAnalysisFS.h"
+#include "InvalidatedAnalysis.h"
 
 namespace dg {
 namespace pta {
