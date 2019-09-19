@@ -18,8 +18,11 @@ class InvalidatedAnalysis {
 
     //TODO: invalidate locals: nd->getParent() - returns parent function, porovnam vsetky allocy s RETURN node-om a zistim
     //TODO: simple testing: points-to-test.cpp
+    //TODO: fix cycling in updateStateTest.c
+    //TODO: fix: local inv is not yet implemented, though somehow it works in some cases, without printing that INV has been inserted into PointsTo
 
     std::ofstream ofs = std::ofstream("invOutput");
+
     size_t numOfProcessedNodes = 0;
 
     using PSNodePtrSet = std::set<PSNode *>;
@@ -258,7 +261,7 @@ class InvalidatedAnalysis {
         insertINV |= fixMay(nd);
         if (insertINV) {
             ofs << "[ INV inserted into <" << nd->getID() << ">'s pointsTo set]\n";
-            nd->pointsTo.add(INVALIDATED, 0);
+            nd->addPointsTo(INVALIDATED, 0);
         }
     }
 

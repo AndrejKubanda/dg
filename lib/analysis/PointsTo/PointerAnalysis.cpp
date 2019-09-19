@@ -341,19 +341,6 @@ bool PointerAnalysis::processNode(PSNode *node)
                    && "Constant should have exactly one pointer");
             break;
         case PSNodeType::CALL_RETURN:
-            if (options.invalidateNodes) {
-                for (PSNode *op : node->operands) {
-                    for (const Pointer& ptr : op->pointsTo) {
-                        if (!canBeDereferenced(ptr))
-                            continue;
-                        PSNodeAlloc *target = PSNodeAlloc::get(ptr.target);
-                        assert(target && "Target is not memory allocation");
-                        if (!target->isHeap() && !target->isGlobal()) {
-                            changed |= node->addPointsTo(INVALIDATED, 0);
-                        }
-                    }
-                }
-            }
             // fall-through
         case PSNodeType::RETURN:
             // gather pointers returned from subprocedure - the same way
