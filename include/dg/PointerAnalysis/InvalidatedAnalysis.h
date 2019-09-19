@@ -16,6 +16,9 @@ namespace pta {
 class InvalidatedAnalysis {
 #define debugPrint 1
 
+    //TODO: invalidate locals: nd->getParent() - returns parent function, porovnam vsetky allocy s RETURN node-om a zistim
+    //TODO: simple testing: points-to-test.cpp
+
     std::ofstream ofs = std::ofstream("invOutput");
     size_t numOfProcessedNodes = 0;
 
@@ -77,12 +80,13 @@ class InvalidatedAnalysis {
         /**
          *  Returns whether State sets have changed.
          */
-        bool updateState(const std::vector<PSNode*>& predecessors, InvalidatedAnalysis* invAn) {
+        bool updateState(const std::vector<PSNode*>& predecessors, InvalidatedAnalysis* IA) {
+            //std::cout << "(updating state) ";
             State stateBefore = *this;
-            PSNodePtrSet predMust = absIntersection(predecessors, invAn);
+            PSNodePtrSet predMust = absIntersection(predecessors, IA);
             mustBeInv.insert(predMust.begin(), predMust.end());
 
-            PSNodePtrSet predAbsUnion = absUnion(predecessors, invAn);
+            PSNodePtrSet predAbsUnion = absUnion(predecessors, IA);
             predAbsUnion.insert(mayBeInv.begin(), mayBeInv.end());
             PSNodePtrSet tmp;
             std::set_difference(predAbsUnion.begin(), predAbsUnion.end(), mustBeInv.begin(), mustBeInv.end(),
@@ -92,7 +96,7 @@ class InvalidatedAnalysis {
         }
 
     private:
-        static PSNodePtrSet absUnion(const std::vector<PSNode*>& predecessors, InvalidatedAnalysis* invAn) {
+        static PSNodePtrSet absUnion(const std::vector<PSNode*>& predecessors, InvalidatedAnalysis* IA) {
             PSNodePtrSet result;
             if (predecessors.empty())
                 return result;
@@ -101,8 +105,8 @@ class InvalidatedAnalysis {
             PSNodePtrSet* maySet;
 
             for (auto* pred : predecessors) {
-                mustSet = &invAn->getState(pred)->mustBeInv;
-                maySet = &invAn->getState(pred)->mayBeInv;
+                mustSet = &IA->getState(pred)->mustBeInv;
+                maySet = &IA->getState(pred)->mayBeInv;
                 result.insert(mustSet->begin(), mustSet->end());
                 result.insert(maySet->begin(), maySet->end());
             }
@@ -137,7 +141,6 @@ class InvalidatedAnalysis {
 
     static inline bool isRelevantNode(PSNode *node) {
         return node->getType() == PSNodeType::ALLOC ||
-               /*node->getType() == PSNodeType::DYN_ALLOC ||*/
                node->getType() == PSNodeType::FREE ||
                node->getType() == PSNodeType::INVALIDATE_LOCALS; /* ||
                node->getType() == PSNodeType::INVALIDATE_OBJECT;*/
@@ -212,35 +215,10 @@ class InvalidatedAnalysis {
             }
         }
 
+        //std::cout << "node: " << node->getID();
         changed |= getState(node)->updateState(node->getPredecessors(), this);
+        //std::cout << "  " << changed << '\n';
         return changed;
-    }
-
-    std::string _tmpPointsToToString(const PSNode *node) const {
-        std::stringstream ss;
-        bool delim = false;
-        if (isa<PSNodeType::FREE>(const_cast<PSNode*>(node)))
-            ss << "[FREE] ";
-        ss << "pointsTo: { ";
-        for (const auto& item : node->pointsTo) {
-            if (delim) { ss << ", "; }
-            ss << item.target->getID();
-            delim = true;
-        }
-        ss << " }\n";
-        return ss.str();
-    }
-
-    std::string _tmpStatesToString() const {
-        std::stringstream ss;
-        for (auto& nd : PS->getNodes()) {
-            if (!nd)
-                continue;
-            const State* st = getState(nd.get());
-            ss << '<' << nd->getID() << "> " << _tmpPointsToToString(nd.get()) << '\n'
-                << st->_tmpStateToString() << "\n\n";
-        }
-        return ss.str();
     }
 
     bool fixMust(PSNode* nd) {
@@ -284,25 +262,32 @@ class InvalidatedAnalysis {
         }
     }
 
-    // this method would make more sense had it been a method of PSNode class
-    std::vector<PSNode*> getReachableNodes(PSNode* node) const {
-        std::vector<PSNode*> reachable;
-        std::vector<bool> visited(_states.size());
-        reachablesRecursion(node, reachable, visited);
-        return reachable;
-    }
-
-    void reachablesRecursion(PSNode* currentNode, std::vector<PSNode*>& reachable, std::vector<bool>& visited) const {
-        visited.at(currentNode->getID()) = true;
-        reachable.push_back(currentNode);
-
-        for (auto* suc : currentNode->getSuccessors()) {
-            if (suc && !visited.at(suc->getID())) {
-                reachablesRecursion(suc, reachable, visited);
-            }
+    std::string _tmpPointsToToString(const PSNode *node) const {
+        std::stringstream ss;
+        bool delim = false;
+        if (isa<PSNodeType::FREE>(const_cast<PSNode*>(node)))
+            ss << "[FREE] ";
+        ss << "pointsTo: { ";
+        for (const auto& item : node->pointsTo) {
+            if (delim) { ss << ", "; }
+            ss << item.target->getID();
+            delim = true;
         }
+        ss << " }\n";
+        return ss.str();
     }
 
+    std::string _tmpStatesToString() const {
+        std::stringstream ss;
+        for (auto& nd : PS->getNodes()) {
+            if (!nd)
+                continue;
+            const State* st = getState(nd.get());
+            ss << '<' << nd->getID() << "> " << _tmpPointsToToString(nd.get()) << '\n'
+               << st->_tmpStateToString() << "\n\n";
+        }
+        return ss.str();
+    }
 
 public:
 
@@ -326,8 +311,17 @@ public:
         while(!to_process.empty()) {
             for (auto* nd : to_process) {
                 if (nd && processNode(nd)) {
-                    auto reachable = getReachableNodes(nd);
-                    if (debugPrint) ofs << "changed: " << nd->getID() << " (reachables " << reachable.size() << ")\n";
+                    auto reachable = PS->getNodes(nd);
+                    if (debugPrint) {
+                        ofs << "changed: " << nd->getID() << " (reachables ";
+                        for (auto node : reachable) {
+                            ofs << node->getID() << " ";
+                        }
+                        ofs << ")\n";
+                    }
+                    if (nd->getID() == /*38*/41 || nd->getID() == /*84*/42) {
+                        //std::cout << " " << nd->getID() << " " << reachable.size() << '\n';
+                    }
                     changed.insert(changed.end(), reachable.begin(), reachable.end());
                 }
             }
