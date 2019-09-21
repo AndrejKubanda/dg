@@ -18,14 +18,13 @@ class InvalidatedAnalysis {
 
     //TODO: invalidate locals: nd->getParent() - returns parent function, porovnam vsetky allocy s RETURN node-om a zistim
     //TODO: simple testing: points-to-test.cpp
-    //TODO: fix cycling in updateStateTest.c
-    //TODO: fix: local inv is not yet implemented, though somehow it works in some cases, without printing that INV has been inserted into PointsTo
 
     std::ofstream ofs = std::ofstream("invOutput");
 
     size_t numOfProcessedNodes = 0;
 
     using PSNodePtrSet = std::set<PSNode *>;
+    using parentsMap = std::map<unsigned, std::set<PSNode*>>;
 
     struct State {
         PSNodePtrSet mustBeInv{};
@@ -60,7 +59,7 @@ class InvalidatedAnalysis {
 
         std::string _tmpStateToString() const {
             std::stringstream ss;
-            ss << "MUST: { ";
+            ss << "    MUST: { ";
             bool delim = false;
             for (auto& item : mustBeInv) {
                 if (delim) { ss << ", "; }
@@ -69,7 +68,7 @@ class InvalidatedAnalysis {
             }
             ss << " }\n";
 
-            ss << "MAY : { ";
+            ss << "    MAY : { ";
             delim = false;
             for (auto& item : mayBeInv) {
                 if (delim) { ss << ", "; }
@@ -84,7 +83,6 @@ class InvalidatedAnalysis {
          *  Returns whether State sets have changed.
          */
         bool updateState(const std::vector<PSNode*>& predecessors, InvalidatedAnalysis* IA) {
-            //std::cout << "(updating state) ";
             State stateBefore = *this;
             PSNodePtrSet predMust = absIntersection(predecessors, IA);
             mustBeInv.insert(predMust.begin(), predMust.end());
@@ -145,7 +143,10 @@ class InvalidatedAnalysis {
     static inline bool isRelevantNode(PSNode *node) {
         return node->getType() == PSNodeType::ALLOC ||
                node->getType() == PSNodeType::FREE ||
-               node->getType() == PSNodeType::INVALIDATE_LOCALS; /* ||
+               node->getType() == PSNodeType::INVALIDATE_LOCALS ||
+               node->getType() == PSNodeType::CALL ||
+               node->getType() == PSNodeType::RETURN ||
+               node->getType() == PSNodeType::CALL_RETURN; /* ||
                node->getType() == PSNodeType::INVALIDATE_OBJECT;*/
     }
 
@@ -198,7 +199,7 @@ class InvalidatedAnalysis {
         return mustSize != state->mustBeInv.size() || maySize != state->mayBeInv.size();
     }
 
-    bool processNode(PSNode *node) {
+    bool processNode(PSNode *node, parentsMap& parentToLocalsMap) {
         assert(node && node->getID() < _states.size());
         numOfProcessedNodes++;
 
@@ -218,12 +219,47 @@ class InvalidatedAnalysis {
             }
         }
 
-        //std::cout << "node: " << node->getID();
-        changed |= getState(node)->updateState(node->getPredecessors(), this);
-        //std::cout << "  " << changed << '\n';
+        std::vector<PSNode*> preds = node->getPredecessors();
+        State* st = getState(node);
+
+        if (isa<PSNodeType::ENTRY>(node)) {
+            auto& callers = static_cast<PSNodeEntry*>(node)->getCallers();
+            preds.insert(preds.end(), callers.begin(), callers.end());
+        }
+
+        // this part should be later optimized. No need to perform this anymore after first walk
+        if (PSNodeAlloc* alloc = PSNodeAlloc::get(node)) {
+            if (!alloc->isHeap() && !alloc->isGlobal()) {
+
+                auto search = parentToLocalsMap.find(node->getParent()->getID());
+                if (search == parentToLocalsMap.end()) {
+                    // map does not have this function, we need to add it
+                    changed |= parentToLocalsMap.emplace(std::pair<unsigned, std::set<PSNode*>>(node->getParent()->getID(), {})).second;
+                }
+                // map has the function, we can add PSNode* to its container
+                changed |= parentToLocalsMap.at(node->getParent()->getID()).emplace(node).second;
+            }
+        }
+
+        if (isa<PSNodeType::RETURN>(node)) {
+            for (auto& nd : parentToLocalsMap.at(node->getParent()->getID())) {
+                st->mustBeInv.emplace(nd);
+            }
+        }
+        if (isa<PSNodeType::CALL_RETURN>(node)) {
+            // TODO: should not receive predecessors from previous node, only from 'returns'
+            auto& returns = static_cast<PSNodeCallRet*>(node)->getReturns(); // dynamic cast is not possible (?)
+            preds.insert(preds.end(), returns.begin(), returns.end());
+        }
+
+        changed |= getState(node)->updateState(preds, this);
         return changed;
     }
 
+    /*
+     * Returns true if pointsToSet points to any target in node's state's mustBeInv.
+     * Also removes these targets from node's pointsToSet
+     */
     bool fixMust(PSNode* nd) {
         bool changed = false;
         auto& pointsTo = nd->pointsTo;
@@ -239,6 +275,9 @@ class InvalidatedAnalysis {
         return changed;
     }
 
+    /*
+     * Returns true if nodes's PointsToSet points to any target in node's mayBeInv
+     */
     bool fixMay(PSNode* nd) {
         auto& pointsTo = nd->pointsTo;
 
@@ -259,7 +298,8 @@ class InvalidatedAnalysis {
         // multiple steps to avoid lazy evaluation.
         bool insertINV = fixMust(nd);
         insertINV |= fixMay(nd);
-        if (insertINV) {
+        // if pointsToSet already contains INV we dont want to add another one
+        if (insertINV && !nd->pointsTo.hasInvalidated()) {
             ofs << "[ INV inserted into <" << nd->getID() << ">'s pointsTo set]\n";
             nd->addPointsTo(INVALIDATED, 0);
         }
@@ -276,7 +316,7 @@ class InvalidatedAnalysis {
             ss << item.target->getID();
             delim = true;
         }
-        ss << " }\n";
+        ss << " }";
         return ss.str();
     }
 
@@ -303,8 +343,9 @@ public:
     }
 
     void run() {
-        std::vector<PSNode *> to_process;
+        std::vector<PSNode *> to_process; // TODO (ask): wouldn't it be better to have a set instead of vector?
         std::vector<PSNode *> changed;
+        std::map<unsigned, std::set<PSNode*>> parentToLocalsMap;
 
         for (auto& nd : PS->getNodes()) {
             if (nd)
@@ -313,7 +354,7 @@ public:
 
         while(!to_process.empty()) {
             for (auto* nd : to_process) {
-                if (nd && processNode(nd)) {
+                if (nd && processNode(nd, parentToLocalsMap)) {
                     auto reachable = PS->getNodes(nd);
                     if (debugPrint) {
                         ofs << "changed: " << nd->getID() << " (reachables ";
@@ -321,9 +362,6 @@ public:
                             ofs << node->getID() << " ";
                         }
                         ofs << ")\n";
-                    }
-                    if (nd->getID() == /*38*/41 || nd->getID() == /*84*/42) {
-                        //std::cout << " " << nd->getID() << " " << reachable.size() << '\n';
                     }
                     changed.insert(changed.end(), reachable.begin(), reachable.end());
                 }
