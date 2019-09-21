@@ -313,11 +313,7 @@ public:
 
     // convenient helper
     bool addPointsTo(PSNode *n, Offset o) { return pointsTo.add(Pointer(n, o)); }
-    bool addPointsTo(const Pointer& ptr) {
-        if (ptr.target->isInvalidated()) {
-            asm("int3");
-        }
-        return pointsTo.add(ptr); }
+    bool addPointsTo(const Pointer& ptr) { return pointsTo.add(ptr); }
     bool addPointsTo(const PointsToSetT& ptrs) { return pointsTo.add(ptrs); }
     bool addPointsTo(std::initializer_list<Pointer> ptrs) { return pointsTo.add(ptrs); }
 
