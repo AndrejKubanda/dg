@@ -9,6 +9,7 @@
 #include "dg/analysis/PointsTo/PointerGraph.h"
 #include "dg/analysis/PointsTo/PointerAnalysisFI.h"
 #include "dg/analysis/PointsTo/PointerAnalysisFS.h"
+#include "dg/analysis/PointsTo/InvalidatedAnalysis.h"
 
 namespace dg {
 namespace tests {
@@ -1009,6 +1010,225 @@ public:
     }
 };
 
+#define printState = false
+
+class InvalidatedAnalysisTest : public Test {
+public:
+    InvalidatedAnalysisTest(const char* n) : Test(n) {}
+
+    using St = InvalidatedAnalysis::State;
+
+    void memLeak_basic_must() {
+        using namespace analysis;
+        PointerGraph PS;
+        /*
+            [malloc]
+               |
+            [free]
+               |
+            [test_load] // must be invalidated
+         */
+
+        PSNodeAlloc* malloc = PSNodeAlloc::cast(PS.create(PSNodeType::ALLOC));
+        malloc->setIsHeap();
+
+        PSNode* free = PS.create(PSNodeType::FREE);
+        free->setOperand(0, malloc);
+
+        PSNode* test_load = PS.create(PSNodeType::LOAD, malloc);
+
+        malloc->addSuccessor(free);
+        free->addSuccessor(test_load);
+
+//        auto sg = PS.createSubgraph(malloc); // TODO: what is this for?
+//        PS.setEntry(sg);
+
+        InvalidatedAnalysis IA (&PS);
+        IA.run();
+
+        St* frState = IA.getState(free);
+        St* ldState = IA.getState(test_load);
+
+//      for (auto* st : {mlState, frState, ldState})
+//            std::cout << st->_tmpStateToString() << '\n';
+
+        check(frState->mustContains(malloc), "[memLeak_basic_must] Free's mustBeInv doesn't contain 'malloc*'\n");
+        check(!frState->mayContains(malloc), "[memLeak_basic_must] Free's mayBeInv cannot contain 'malloc*\n");
+        check(ldState->mustContains(malloc), "[memLeak_basic_must] Load's mustBeInv cannot contain 'malloc*'\n");
+        check(test_load->pointsTo.hasInvalidated(), "[memLeak_basic_must] Load does not point to INV\n");
+    }
+
+    void memLeak_basic_may() {
+        using namespace analysis;
+        PointerGraph PS;
+        /*
+                   [malloc]
+                    /    \
+              [load]     [free]
+                    \    /
+                  [test_load] // may be invalidate
+
+         */
+
+        PSNodeAlloc* malloc = PSNodeAlloc::cast(PS.create(PSNodeType::ALLOC));
+        malloc->setIsHeap();
+
+        PSNode* free = PS.create(PSNodeType::FREE);
+        free->setOperand(0, malloc);
+
+        PSNode* load = PS.create(PSNodeType::LOAD, malloc);
+        PSNode* test_load = PS.create(PSNodeType::LOAD, malloc);
+
+        malloc->addSuccessor(load);
+        malloc->addSuccessor(free);
+        free->addSuccessor(test_load);
+        load->addSuccessor(test_load);
+
+        InvalidatedAnalysis IA (&PS);
+        IA.run();
+
+        St* mlState = IA.getState(malloc);
+        St* frState = IA.getState(free);
+        St* ldState = IA.getState(load);
+        St* test_loadState = IA.getState(test_load);
+
+//        for (auto* st : {mlState, frState, ldState})
+//            std::cout << st->_tmpStateToString() << '\n';
+
+        check(!mlState->mustContains(malloc), "[memLeak_basic_may] Load's mustBeInv cannot contain 'malloc*'\n");
+        check(!mlState->mayContains(malloc), "[memLeak_basic_may] Load's mayBeInv cannot contain 'malloc*'\n");
+
+        check(!ldState->mustContains(malloc), "[memLeak_basic_may] Load's mustBeInv cannot contain 'malloc*'\n");
+        check(!ldState->mayContains(malloc), "[memLeak_basic_may] Load's mayBeInv cannot contain 'malloc*'\n");
+
+        check(frState->mustContains(malloc), "[memLeak_basic_may] Free's mustBeInv cannot contain 'malloc*'\n");
+        check(!frState->mayContains(malloc), "[memLeak_basic_may] Free's mayBeInv doesn't contain 'malloc*'\n");
+
+        check(!test_loadState->mustContains(malloc), "[memLeak_basic_may] Load's mustBeInv cannot contain 'malloc*'\n");
+        check(test_loadState->mayContains(malloc), "[memLeak_basic_may] Load's mayBeInv doesnt contain 'malloc*'\n");
+
+        check(test_load->pointsTo.hasInvalidated(), "[memLeak_basic_may] Load does not point to INV\n");
+    }
+
+
+    void memLeak_must1() {
+        using namespace analysis;
+        PointerGraph PS;
+        /*
+               [call]
+                     \
+                      [entry]
+                         |
+                      [malloc]
+                         |
+                       [free]
+                         |
+                       [return]
+                      /
+              [call return]
+                 |
+              [test_load] // must be invalidated
+         */
+
+        /*
+        PSNodeAlloc* malloc = PSNodeAlloc::cast(PS.create(PSNodeType::ALLOC));
+        malloc->setIsHeap();
+
+        PSNode* free = PS.create(PSNodeType::FREE);
+        free->setOperand(0, malloc);
+
+        PSNode* test_load = PS.create(PSNodeType::LOAD, malloc);
+
+        malloc->addSuccessor(free);
+        free->addSuccessor(test_load);
+
+//        auto sg = PS.createSubgraph(malloc);
+//        PS.setEntry(sg);
+
+        InvalidatedAnalysis IA (&PS);
+        IA.run();
+
+        St* frState = IA.getState(free);
+        St* ldState = IA.getState(test_load);
+
+//      for (auto* st : {mlState, frState, ldState})
+//            std::cout << st->_tmpStateToString() << '\n';
+
+        check(frState->mustContains(malloc), "[memLeak_basic_must] Free's mustBeInv doesn't contain 'malloc*'\n");
+        check(!frState->mayContains(malloc), "[memLeak_basic_must] Free's mayBeInv cannot contain 'malloc*\n");
+        check(ldState->mustContains(malloc), "[memLeak_basic_must] Load's mustBeInv cannot contain 'malloc*'\n");
+        check(test_load->pointsTo.hasInvalidated(), "[memLeak_basic_must] Load does not point to INV\n");
+         */
+    }
+
+    void memLeak_may1() {
+        using namespace analysis;
+        PointerGraph PS;
+        /*
+               [call]
+                     \
+                      [entry]
+                         |
+                      [malloc]
+                         |   \
+                         |    [free]
+                         |   /
+                        [return]
+                      /
+              [call return]
+                 |
+              [test_load] // may be invalidated
+         */
+
+
+        /*
+        PSNodeAlloc* malloc = PSNodeAlloc::cast(PS.create(PSNodeType::ALLOC));
+        malloc->setIsHeap();
+
+        PSNode* free = PS.create(PSNodeType::FREE);
+        free->setOperand(0, malloc);
+
+        PSNode* load = PS.create(PSNodeType::LOAD, malloc);
+        PSNode* test_load = PS.create(PSNodeType::LOAD, malloc);
+
+        malloc->addSuccessor(load);
+        malloc->addSuccessor(free);
+        free->addSuccessor(test_load);
+        load->addSuccessor(test_load);
+
+        InvalidatedAnalysis IA (&PS);
+        IA.run();
+
+        St* mlState = IA.getState(malloc);
+        St* frState = IA.getState(free);
+        St* ldState = IA.getState(load);
+        St* test_loadState = IA.getState(test_load);
+
+//        for (auto* st : {mlState, frState, ldState})
+//            std::cout << st->_tmpStateToString() << '\n';
+
+        check(!mlState->mustContains(malloc), "[memLeak_basic_may] Load's mustBeInv cannot contain 'malloc*'\n");
+        check(!mlState->mayContains(malloc), "[memLeak_basic_may] Load's mayBeInv cannot contain 'malloc*'\n");
+
+        check(!ldState->mustContains(malloc), "[memLeak_basic_may] Load's mustBeInv cannot contain 'malloc*'\n");
+        check(!ldState->mayContains(malloc), "[memLeak_basic_may] Load's mayBeInv cannot contain 'malloc*'\n");
+
+        check(frState->mustContains(malloc), "[memLeak_basic_may] Free's mustBeInv cannot contain 'malloc*'\n");
+        check(!frState->mayContains(malloc), "[memLeak_basic_may] Free's mayBeInv doesn't contain 'malloc*'\n");
+
+        check(!test_loadState->mustContains(malloc), "[memLeak_basic_may] Load's mustBeInv cannot contain 'malloc*'\n");
+        check(test_loadState->mayContains(malloc), "[memLeak_basic_may] Load's mayBeInv doesnt contain 'malloc*'\n");
+
+        check(test_load->pointsTo.hasInvalidated(), "[memLeak_basic_may] Load does not point to INV\n");
+         */
+    }
+
+    void test() {
+        memLeak_basic_must();
+        memLeak_basic_may();
+    }
+};
+
 }; // namespace tests
 }; // namespace dg
 
@@ -1017,9 +1237,9 @@ int main(void)
     using namespace dg::tests;
     TestRunner Runner;
 
-    Runner.add(new FlowInsensitivePointsToTest());
-    Runner.add(new FlowSensitivePointsToTest());
-    Runner.add(new PSNodeTest());
-
+    //Runner.add(new FlowInsensitivePointsToTest());
+    //Runner.add(new FlowSensitivePointsToTest());
+    //Runner.add(new PSNodeTest());
+    Runner.add(new InvalidatedAnalysisTest("Invalidated analysis test"));
     return Runner();
 }
