@@ -200,7 +200,7 @@ class PointerGraph
                 break;
         }
 
-        assert(node && "Didn't created node");
+        assert(node && "Didn't create node");
         return node;
     }
 

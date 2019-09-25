@@ -9,6 +9,7 @@
 #include "dg/PointerAnalysis/PointerGraph.h"
 #include "dg/PointerAnalysis/PointerAnalysisFI.h"
 #include "dg/PointerAnalysis/PointerAnalysisFS.h"
+#include "dg/PointerAnalysis/InvalidatedAnalysis.h"
 
 using namespace dg::pta;
 
@@ -984,6 +985,319 @@ public:
     }
 };
 
+#define printState = false
+
+class InvalidatedAnalysisTest : public Test {
+public:
+    InvalidatedAnalysisTest(const char* n) : Test(n) {}
+
+    using St = InvalidatedAnalysis::State;
+
+    std::string printPredsSuccs(const PSNode* node) const {
+        std::stringstream ss;
+        ss << PSNodeTypeToCString(node->getType()) << "[" << node->getID() << "] [preds:";
+        for (auto* nd : node->getPredecessors()) {
+            ss << " " << PSNodeTypeToCString(nd->getType());
+        }
+        ss << "] [succs:";
+        for (auto* nd : node->getSuccessors()) {
+            ss << " " << PSNodeTypeToCString(nd->getType());
+        }
+        ss << "]\n";
+        return ss.str();
+    }
+
+    void memLeak_basic_must() {
+        using namespace analysis;
+        PointerGraph PS;
+        /*
+            [malloc]
+               |
+            [free]
+               |
+            [test_load] // must be invalidated
+         */
+
+        PSNodeAlloc* malloc = PSNodeAlloc::cast(PS.create(PSNodeType::ALLOC));
+        malloc->setIsHeap();
+
+        PSNode* free = PS.create(PSNodeType::FREE, static_cast<PSNode*>(malloc));
+
+        PSNode* test_load = PS.create(PSNodeType::LOAD, malloc);
+
+        malloc->addSuccessor(free);
+        free->addSuccessor(test_load);
+        test_load->addPointsTo(static_cast<PSNode*>(malloc), 0);
+//        auto sg = PS.createSubgraph(malloc); // TODO: what is this for?
+//        PS.setEntry(sg);
+
+        InvalidatedAnalysis IA (&PS);
+        IA.run();
+
+        St* frState = IA.getState(free);
+        St* ldState = IA.getState(test_load);
+
+//      for (auto* st : {mlState, frState, ldState})
+//            std::cout << st->_tmpStateToString() << '\n';
+
+        check(frState->mustContains(malloc), "[memLeak_basic_must] Free's mustBeInv doesn't contain 'malloc*'\n");
+        check(!frState->mayContains(malloc), "[memLeak_basic_must] Free's mayBeInv cannot contain 'malloc*\n");
+        check(ldState->mustContains(malloc), "[memLeak_basic_must] Load's mustBeInv cannot contain 'malloc*'\n");
+        check(!ldState->mayContains(malloc), "[memLeak_basic_must] Load's mayBeInv cannot contain 'malloc*'\n");
+        check(test_load->pointsTo.hasInvalidated(), "[memLeak_basic_must] Load does not point to INV\n");
+    }
+
+    void memLeak_basic_may() {
+        using namespace analysis;
+        PointerGraph PS;
+        /*
+                   [malloc]
+                    /    \
+              [load]     [free]
+                    \    /
+                  [test_load] // may be invalidated
+         */
+
+        PSNodeAlloc* malloc = PSNodeAlloc::cast(PS.create(PSNodeType::ALLOC));
+        malloc->setIsHeap();
+
+        PSNode* free = PS.create(PSNodeType::FREE, static_cast<PSNode*>(malloc));
+
+        PSNode* load = PS.create(PSNodeType::LOAD, malloc);
+        PSNode* test_load = PS.create(PSNodeType::LOAD, malloc);
+
+        malloc->addSuccessor(load);
+        malloc->addSuccessor(free);
+        free->addSuccessor(test_load);
+        load->addSuccessor(test_load);
+        load->addPointsTo(static_cast<PSNode*>(malloc), 0);
+        test_load->addPointsTo(static_cast<PSNode*>(malloc), 0);
+
+        InvalidatedAnalysis IA (&PS);
+        IA.run();
+
+        St* mlState = IA.getState(malloc);
+        St* frState = IA.getState(free);
+        St* ldState = IA.getState(load);
+        St* test_loadState = IA.getState(test_load);
+
+//        for (auto* st : {mlState, frState, ldState})
+//            std::cout << st->_tmpStateToString() << '\n';
+
+        check(!mlState->mustContains(malloc), "[memLeak_basic_may] Load's mustBeInv cannot contain 'malloc*'\n");
+        check(!mlState->mayContains(malloc), "[memLeak_basic_may] Load's mayBeInv cannot contain 'malloc*'\n");
+
+        check(!ldState->mustContains(malloc), "[memLeak_basic_may] Load's mustBeInv cannot contain 'malloc*'\n");
+        check(!ldState->mayContains(malloc), "[memLeak_basic_may] Load's mayBeInv cannot contain 'malloc*'\n");
+
+        check(frState->mustContains(malloc), "[memLeak_basic_may] Free's mustBeInv cannot contain 'malloc*'\n");
+        check(!frState->mayContains(malloc), "[memLeak_basic_may] Free's mayBeInv doesn't contain 'malloc*'\n");
+
+        check(!test_loadState->mustContains(malloc), "[memLeak_basic_may] Load's mustBeInv cannot contain 'malloc*'\n");
+        check(test_loadState->mayContains(malloc), "[memLeak_basic_may] Load's mayBeInv doesnt contain 'malloc*'\n");
+
+        check(test_load->pointsTo.hasInvalidated(), "[memLeak_basic_may] Load does not point to INV\n");
+    }
+
+
+    void memLeak_must1() {
+        using namespace analysis;
+        PointerGraph PS;
+        /*
+               [entryMain]
+                  |
+               [call]
+                     \
+                      [entryFoo]
+                         |
+                      [malloc]
+                         |
+                       [free]
+                         |
+                       [ret]
+                      /
+              [call_return]
+                 |
+              [test_load] // must be invalidated
+         */
+
+        PSNodeEntry* entryMain = PSNodeEntry::cast(PS.create(PSNodeType::ENTRY));
+        PSNodeCall* call = PSNodeCall::cast(PS.create(PSNodeType::CALL));
+        PSNodeEntry* entryFoo = PSNodeEntry::cast(PS.create(PSNodeType::ENTRY));
+        PSNodeAlloc* malloc = PSNodeAlloc::cast(PS.create(PSNodeType::ALLOC));
+        PSNode* free = PS.create(PSNodeType::FREE, static_cast<PSNode*>(malloc));
+        PSNodeRet* ret = PSNodeRet::get(PS.create(PSNodeType::RETURN, static_cast<PSNode*>(entryFoo)));
+        PSNodeCallRet* callRet = PSNodeCallRet::cast(PS.create(PSNodeType::CALL_RETURN, static_cast<PSNode*>(call)));
+        PSNode* test_load = PS.create(PSNodeType::LOAD, malloc);
+
+        entryMain->addSuccessor(call);
+        call->addSuccessor(callRet);
+        callRet->addSuccessor(test_load);
+
+        entryFoo->addSuccessor(malloc);
+        malloc->addSuccessor(free);
+        free->addSuccessor(ret);
+
+        call->addOperand(callRet);
+        malloc->setIsHeap();
+        callRet->addOperand(ret);
+        callRet->addReturn(ret);
+
+        auto* mainSubGraph = PS.createSubgraph(entryMain);
+        entryMain->setParent(mainSubGraph);
+        call->setParent(mainSubGraph);
+        callRet->setParent(mainSubGraph);
+        test_load->setParent(mainSubGraph);
+
+        auto* functionSubGraph = PS.createSubgraph(entryFoo);
+        entryFoo->setParent(functionSubGraph);
+        malloc->setParent(functionSubGraph);
+        free->setParent(functionSubGraph);
+        ret->setParent(functionSubGraph);
+
+        test_load->addPointsTo(malloc, 0);
+
+        InvalidatedAnalysis IA(&PS);
+        IA.run();
+
+        St* ldState = IA.getState(test_load);
+        check(ldState->mustContains(malloc), "[memLeak_must1] Load's mustBeInv does not contain 'malloc*'\n");
+        check(!ldState->mayContains(malloc), "[memLeak_must1] Load's mayBeInv cannot contain 'malloc*'\n");
+        check(test_load->pointsTo.hasInvalidated(), "[memLeak_must1] Load does not point to INV\n");
+    }
+
+    void memLeak_may1() {
+        using namespace analysis;
+        PointerGraph PS;
+        /*
+               [entryMain]
+                  |
+               [call]
+                     \
+                      [entryFoo]
+                         |
+                      [malloc]
+                         |   \
+                         |    [free]
+                         |   /
+                        [load] // may be invalidated
+                          |
+                        [return]
+                      /
+              [call return]
+                 |
+              [test_load] // may be invalidated
+         */
+
+
+        PSNodeCall* call = PSNodeCall::cast(PS.create(PSNodeType::CALL));
+        PSNodeEntry* entryFoo = PSNodeEntry::cast(PS.create(PSNodeType::ENTRY));
+        PSNodeAlloc* malloc = PSNodeAlloc::cast(PS.create(PSNodeType::ALLOC));
+        PSNode* free = PS.create(PSNodeType::FREE, malloc);
+        PSNode* load = PS.create(PSNodeType::LOAD, malloc);
+        PSNodeRet* ret = PSNodeRet::get(PS.create(PSNodeType::RETURN, entryFoo));
+        PSNodeCallRet* callRet = PSNodeCallRet::cast(PS.create(PSNodeType::CALL_RETURN, call));
+        PSNode* test_load = PS.create(PSNodeType::LOAD, malloc);
+
+        call->addSuccessor(callRet);
+        callRet->addSuccessor(test_load);
+
+        entryFoo->addSuccessor(malloc);
+        malloc->addSuccessor(load);
+        malloc->addSuccessor(free);
+        free->addSuccessor(load);
+        load->addSuccessor(ret);
+
+        call->addOperand(callRet);
+        malloc->setIsHeap();
+        callRet->addOperand(ret);
+        callRet->addReturn(ret);
+
+        auto* mainSubGraph = PS.createSubgraph(call);
+        call->setParent(mainSubGraph);
+        callRet->setParent(mainSubGraph);
+        test_load->setParent(mainSubGraph);
+
+        auto* functionSubGraph = PS.createSubgraph(entryFoo);
+        entryFoo->setParent(functionSubGraph);
+        malloc->setParent(functionSubGraph);
+        free->setParent(functionSubGraph);
+        load->setParent(functionSubGraph);
+        ret->setParent(functionSubGraph);
+
+        load->addPointsTo(malloc, 0);
+        test_load->addPointsTo(malloc, 0);
+
+        InvalidatedAnalysis IA(&PS);
+        IA.run();
+
+        St* ldState = IA.getState(load);
+        St* test_ldState = IA.getState(test_load);
+
+        check(!ldState->mustContains(malloc), "[memLeak_may1] Load's mustBeInv cannot contain 'malloc*'\n");
+        check(ldState->mayContains(malloc), "[memLeak_may1] Load's mayBeInv does not contain 'malloc*'\n");
+        check(!test_ldState->mustContains(malloc), "[memLeak_may1] Load's mustBeInv cannot contain 'malloc*'\n");
+        check(test_ldState->mayContains(malloc), "[memLeak_may1] Load's mayBeInv does not contain 'malloc*'\n");
+        check(load->pointsTo.hasInvalidated(), "[memLeak_may1] Load does not point to INV\n");
+        check(test_load->pointsTo.hasInvalidated(), "[memLeak_may1] Load does not point to INV\n");
+    }
+
+    void locInv_basic_must() {
+        using namespace analysis;
+        PointerGraph PS;
+        /*
+                [entry]
+                   |
+                 [call]
+                       \
+                        [entry]
+                           |
+                        [alloc]
+                           |
+                        [load]
+                           |
+                        [return]
+                       /
+             [call_return]
+                   |
+              [test_load] // alloc must be inv
+         */
+    }
+
+    void locInv_basic_may() {
+        using namespace analysis;
+        PointerGraph PS;
+        /*
+               [entry]
+                 |   \
+                 |    [call]
+                 |          \
+                 |           [entry]
+                 |              |
+                 |           [alloc]
+                 |              |
+                 |          [load]
+                 |              |
+                 |           [return]
+                 |          /
+                 |  [call_return]
+                  \    /
+               [test_load] // alloc must be inv
+         */
+    }
+
+    void test() {
+//        memLeak_basic_must();
+//        memLeak_basic_may();
+
+        memLeak_must1();
+        memLeak_may1();
+
+//        locInv_basic_must();
+//        locInv_basic_may();
+    }
+};
+
 }; // namespace tests
 }; // namespace dg
 
@@ -992,9 +1306,9 @@ int main(void)
     using namespace dg::tests;
     TestRunner Runner;
 
-    Runner.add(new FlowInsensitivePointsToTest());
-    Runner.add(new FlowSensitivePointsToTest());
-    Runner.add(new PSNodeTest());
-
+    //Runner.add(new FlowInsensitivePointsToTest());
+    //Runner.add(new FlowSensitivePointsToTest());
+    //Runner.add(new PSNodeTest());
+    Runner.add(new InvalidatedAnalysisTest("Invalidated analysis test"));
     return Runner();
 }
