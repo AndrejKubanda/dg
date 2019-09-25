@@ -8,15 +8,21 @@
 #include <memory>
 #include <sstream>
 #include <fstream>
+#include <llvm/ADT/STLExtras.h>
 
 namespace dg {
 namespace analysis {
 namespace pta {
 
-class InvalidatedAnalysis {
 #define debugPrint 1
+#define testing 1
 
-    //TODO: invalidate locals: nd->getParent() - returns parent function, porovnam vsetky allocy s RETURN node-om a zistim
+#if testing
+struct InvalidatedAnalysis {
+#else
+class InvalidatedAnalysis {
+#endif
+
     //TODO: simple testing: points-to-test.cpp
 
     std::ofstream ofs = std::ofstream("invOutput");
@@ -36,6 +42,16 @@ class InvalidatedAnalysis {
 
         State() = default;
         State(PSNodePtrSet must, PSNodePtrSet may) : mustBeInv(std::move(must)), mayBeInv(std::move(may)) {}
+
+        bool mustContains(PSNode* target) const {
+            auto search = mustBeInv.find(target);
+            return search != mustBeInv.end();
+        }
+
+        bool mayContains(PSNode* target) const {
+            auto search = mayBeInv.find(target);
+            return search != mayBeInv.end();
+        }
 
         bool operator==(const State& other) {
             return mustBeInv == other.mustBeInv && mayBeInv == other.mayBeInv;
@@ -202,7 +218,7 @@ class InvalidatedAnalysis {
     bool processNode(PSNode *node, parentsMap& parentToLocalsMap) {
         assert(node && node->getID() < _states.size());
         numOfProcessedNodes++;
-
+        //std::cout << "processing [" << node->getID() << "]\n";
         if (noChange(node)) {
             auto pred = node->getSinglePredecessor();
             assert(pred->getID() <_states.size());
@@ -225,17 +241,16 @@ class InvalidatedAnalysis {
         if (isa<PSNodeType::ENTRY>(node)) {
             auto& callers = static_cast<PSNodeEntry*>(node)->getCallers();
             preds.insert(preds.end(), callers.begin(), callers.end());
+            auto search = parentToLocalsMap.find(node->getParent()->getID());
+            if (search == parentToLocalsMap.end()) {
+                parentToLocalsMap.emplace(std::pair<unsigned, std::set<PSNode*>>(node->getParent()->getID(), {}));
+            }
         }
 
         // this part should be later optimized. No need to perform this anymore after first walk
-        if (PSNodeAlloc* alloc = PSNodeAlloc::get(node)) {
-            if (!alloc->isHeap() && !alloc->isGlobal()) {
-
-                auto search = parentToLocalsMap.find(node->getParent()->getID());
-                if (search == parentToLocalsMap.end()) {
-                    // map does not have this function, we need to add it
-                    changed |= parentToLocalsMap.emplace(std::pair<unsigned, std::set<PSNode*>>(node->getParent()->getID(), {})).second;
-                }
+        if ( PSNodeAlloc* alloc = PSNodeAlloc::get(node)) {
+            if (!alloc->isHeap() && !alloc->isGlobal()) { // TODO: not alloc but store node has info about Global var
+                // TODO: do these 2 operations need to have an effect on 'changed'?
                 // map has the function, we can add PSNode* to its container
                 changed |= parentToLocalsMap.at(node->getParent()->getID()).emplace(node).second;
             }
@@ -247,12 +262,13 @@ class InvalidatedAnalysis {
             }
         }
         if (isa<PSNodeType::CALL_RETURN>(node)) {
-            // TODO: should not receive predecessors from previous node, only from 'returns'
             auto& returns = static_cast<PSNodeCallRet*>(node)->getReturns(); // dynamic cast is not possible (?)
+            preds.clear(); // CALL_RETURN receives "real" predecessors only from its 'returns', not from direct predecessors
             preds.insert(preds.end(), returns.begin(), returns.end());
         }
 
         changed |= getState(node)->updateState(preds, this);
+        //std::cout << getState(node)->_tmpStateToString() << '\n';
         return changed;
     }
 
@@ -342,6 +358,10 @@ public:
         }
     }
 
+    std::vector<std::unique_ptr<State>>& getStates() {
+        return _states;
+    }
+
     void run() {
         std::vector<PSNode *> to_process; // TODO (ask): wouldn't it be better to have a set instead of vector?
         std::vector<PSNode *> changed;
@@ -373,8 +393,10 @@ public:
         if (debugPrint) ofs << "processed: " << numOfProcessedNodes << "\n\n" << _tmpStatesToString() << '\n';
 
         for (auto& nd : PS->getNodes()) {
-            if (nd) fixPointsTo(nd.get());
+            if (nd)
+                fixPointsTo(nd.get()); // unknown error when testing (on 2nd node)
         }
+
     }
 };
 
