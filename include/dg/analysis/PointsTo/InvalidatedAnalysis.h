@@ -241,17 +241,16 @@ class InvalidatedAnalysis {
         if (isa<PSNodeType::ENTRY>(node)) {
             auto& callers = static_cast<PSNodeEntry*>(node)->getCallers();
             preds.insert(preds.end(), callers.begin(), callers.end());
+            auto search = parentToLocalsMap.find(node->getParent()->getID());
+            if (search == parentToLocalsMap.end()) {
+                parentToLocalsMap.emplace(std::pair<unsigned, std::set<PSNode*>>(node->getParent()->getID(), {}));
+            }
         }
 
         // this part should be later optimized. No need to perform this anymore after first walk
         if ( PSNodeAlloc* alloc = PSNodeAlloc::get(node)) {
             if (!alloc->isHeap() && !alloc->isGlobal()) { // TODO: not alloc but store node has info about Global var
-                auto search = parentToLocalsMap.find(node->getParent()->getID());
-                if (search == parentToLocalsMap.end()) {
-                    // TODO: do these 2 operations need to have an effect on 'changed'?
-                    // map does not have this function, we need to add it
-                    changed |= parentToLocalsMap.emplace(std::pair<unsigned, std::set<PSNode*>>(node->getParent()->getID(), {})).second;
-                }
+                // TODO: do these 2 operations need to have an effect on 'changed'?
                 // map has the function, we can add PSNode* to its container
                 changed |= parentToLocalsMap.at(node->getParent()->getID()).emplace(node).second;
             }
