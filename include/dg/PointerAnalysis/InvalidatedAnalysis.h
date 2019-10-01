@@ -73,25 +73,36 @@ class InvalidatedAnalysis {
             return mustSize != mustBeInv.size() || maySize != mayBeInv.size();
         }
 
-        std::string _tmpStateToString() const {
+        std::string _tmpMustToString() const {
             std::stringstream ss;
-            ss << "    MUST: { ";
+            ss << "MUST: { ";
             bool delim = false;
             for (auto& item : mustBeInv) {
                 if (delim) { ss << ", "; }
                 ss << item->getID();
                 delim = true;
             }
-            ss << " }\n";
+            ss << " }";
+            return ss.str();
+        }
 
-            ss << "    MAY : { ";
-            delim = false;
+        std::string _tmpMayToString() const {
+            std::stringstream ss;
+            ss << "MAY: { ";
+            bool delim = false;
             for (auto& item : mayBeInv) {
                 if (delim) { ss << ", "; }
                 ss << item->getID();
                 delim = true;
             }
             ss << " }";
+            return ss.str();
+        }
+
+        std::string _tmpStateToString() const {
+            std::stringstream ss;
+            ss << "    " << _tmpMustToString() << '\n'
+            << "    " << _tmpMayToString() << '\n';
             return ss.str();
         }
 
@@ -218,7 +229,10 @@ class InvalidatedAnalysis {
     bool processNode(PSNode *node, parentsMap& parentToLocalsMap) {
         assert(node && node->getID() < _states.size());
         numOfProcessedNodes++;
-        //std::cout << "processing [" << node->getID() << "]\n";
+        //ofs << "............processing " << PSNodeTypeToCString(node->getType()) << "[" << node->getID() << "]\n";
+        PSNode _nodeBefore = *node; // debug
+        State _stateBefore = *getState(node); // debug
+
         if (noChange(node)) {
             auto pred = node->getSinglePredecessor();
             assert(pred->getID() <_states.size());
@@ -239,7 +253,7 @@ class InvalidatedAnalysis {
         State* st = getState(node);
 
         if (isa<PSNodeType::ENTRY>(node)) {
-            auto& callers = static_cast<PSNodeEntry*>(node)->getCallers();
+            auto& callers = PSNodeEntry::cast(node)->getCallers();
             preds.insert(preds.end(), callers.begin(), callers.end());
             auto search = parentToLocalsMap.find(node->getParent()->getID());
             if (search == parentToLocalsMap.end()) {
@@ -250,25 +264,28 @@ class InvalidatedAnalysis {
         // this part should be later optimized. No need to perform this anymore after first walk
         if ( PSNodeAlloc* alloc = PSNodeAlloc::get(node)) {
             if (!alloc->isHeap() && !alloc->isGlobal()) { // TODO: not alloc but store node has info about Global var
-                // TODO: do these 2 operations need to have an effect on 'changed'?
-                // map has the function, we can add PSNode* to its container
-                changed |= parentToLocalsMap.at(node->getParent()->getID()).emplace(node).second;
+                // map has the function, we can add PSNode* to its container*/
+                /*changed |= */parentToLocalsMap.at(node->getParent()->getID()).emplace(node)/*.second*/;
             }
         }
 
         if (isa<PSNodeType::RETURN>(node)) {
             for (auto& nd : parentToLocalsMap.at(node->getParent()->getID())) {
-                st->mustBeInv.emplace(nd);
+                changed |= st->mustBeInv.emplace(nd).second;
             }
         }
         if (isa<PSNodeType::CALL_RETURN>(node)) {
-            auto& returns = static_cast<PSNodeCallRet*>(node)->getReturns(); // dynamic cast is not possible (?)
-            preds.clear(); // CALL_RETURN receives "real" predecessors only from its 'returns', not from direct predecessors
+            auto& returns = PSNodeCallRet::cast(node)->getReturns(); // dynamic cast is not possible (?)
+            // info about states propagates like this: CALL --> ENTRY --> RETURN --> CALLRETURN
+            preds.clear(); // therefore we dont want to have certain pointers twice in preds vector
             preds.insert(preds.end(), returns.begin(), returns.end());
         }
 
         changed |= getState(node)->updateState(preds, this);
         //std::cout << getState(node)->_tmpStateToString() << '\n';
+        if (changed)
+            ofs << "changed: <" << node->getID() << "> " <<  PSNodeTypeToCString(node->getType()) << '\n'
+            << _tmpCompareChanges(&_stateBefore, getState(node));
         return changed;
     }
 
@@ -348,8 +365,17 @@ class InvalidatedAnalysis {
         return ss.str();
     }
 
-public:
+    std::string _tmpCompareChanges(const State* beforeSt, const State* afterSt) const {
+        std::stringstream ss;
+        std::string tab = "    ";
+        ss << tab << "BEFORE: " << beforeSt->_tmpMustToString() << '\n'
+           << tab << "AFTER: " << afterSt->_tmpMustToString() << '\n'
+           << tab << "BEFORE: " << beforeSt->_tmpMayToString() << '\n'
+           << tab << "AFTER: " << afterSt->_tmpMayToString() << '\n';
+        return ss.str();
+    }
 
+public:
     explicit InvalidatedAnalysis(PointerGraph *ps)
     : PS(ps), _mapping(ps->size()), _states(ps->size()) {
         for (size_t i = 1; i < ps->size(); ++i) {
@@ -373,11 +399,11 @@ public:
                 if (nd && processNode(nd, parentToLocalsMap)) {
                     auto reachable = PS->getNodes(nd);
                     if (debugPrint) {
-                        ofs << "changed: " << nd->getID() << " (reachables ";
+                        ofs << "    (reachables ";
                         for (auto node : reachable) {
                             ofs << node->getID() << " ";
                         }
-                        ofs << ")\n";
+                        ofs << ")\n\n";
                     }
                     changed.insert(changed.end(), reachable.begin(), reachable.end());
                 }
@@ -390,7 +416,7 @@ public:
 
         for (auto& nd : PS->getNodes()) {
             if (nd)
-                fixPointsTo(nd.get()); // unknown error when testing (on 2nd node)
+                fixPointsTo(nd.get());
         }
 
 	return true;
