@@ -1124,7 +1124,6 @@ public:
         check(test_load->pointsTo.hasInvalidated(), "[memLeak_basic_may] Load does not point to INV\n");
     }
 
-
     void memLeak_must1() {
         using namespace analysis;
         PointerGraph PS;
@@ -1263,63 +1262,292 @@ public:
         check(ldState->mayContains(malloc), "[memLeak_may1] Load's mayBeInv does not contain 'malloc*'\n");
         check(!test_ldState->mustContains(malloc), "[memLeak_may1] Load's mustBeInv cannot contain 'malloc*'\n");
         check(test_ldState->mayContains(malloc), "[memLeak_may1] Load's mayBeInv does not contain 'malloc*'\n");
+
         check(load->pointsTo.hasInvalidated(), "[memLeak_may1] Load does not point to INV\n");
         check(test_load->pointsTo.hasInvalidated(), "[memLeak_may1] Load does not point to INV\n");
     }
+
 
     void locInv_basic_must() {
         using namespace analysis;
         PointerGraph PS;
         /*
-                [entry]
+                [entryMain]
                    |
                  [call]
                        \
-                        [entry]
+                        [entryFoo]
                            |
                         [alloc]
                            |
-                        [load]
+                        [loadFoo (alloc)]
                            |
                         [return]
                        /
              [call_return]
                    |
-              [test_load] // alloc must be inv
+              [loadMain (alloc)] // alloc must be inv
          */
+
+        PSNodeEntry* entryMain = PSNodeEntry::cast(PS.create(PSNodeType::ENTRY));
+        PSNodeCall* call = PSNodeCall::cast(PS.create(PSNodeType::CALL));
+        PSNodeEntry* entryFoo = PSNodeEntry::cast(PS.create(PSNodeType::ENTRY));
+        PSNodeAlloc* alloc = PSNodeAlloc::cast(PS.create(PSNodeType::ALLOC));
+        PSNode* loadFoo = PS.create(PSNodeType::LOAD, alloc);
+        PSNodeRet* ret = PSNodeRet::get(PS.create(PSNodeType::RETURN, entryFoo));
+        PSNodeCallRet* callRet = PSNodeCallRet::cast(PS.create(PSNodeType::CALL_RETURN, call));
+        PSNode* loadMain = PS.create(PSNodeType::LOAD, alloc);
+
+        entryMain->addSuccessor(call);
+        call->addSuccessor(callRet);
+        callRet->addSuccessor(loadMain);
+
+        entryFoo->addSuccessor(alloc);
+        alloc->addSuccessor(loadFoo);
+        loadFoo->addSuccessor(ret);
+
+        call->addOperand(callRet);
+        callRet->addOperand(ret);
+        callRet->addReturn(ret);
+
+        auto* mainSubG = PS.createSubgraph(entryMain);
+        entryMain->setParent(mainSubG);
+        call->setParent(mainSubG);
+        callRet->setParent(mainSubG);
+        loadMain->setParent(mainSubG);
+        auto* fooSubG = PS.createSubgraph(entryFoo);
+        entryFoo->setParent(fooSubG);
+        alloc->setParent(fooSubG);
+        loadFoo->setParent(fooSubG);
+        ret->setParent(fooSubG);
+
+        loadFoo->addPointsTo(alloc, 0);
+        loadMain->addPointsTo(alloc, 0);
+
+        InvalidatedAnalysis IA(&PS);
+        IA.run();
+
+        St* ldFoo = IA.getState(loadFoo);
+        St* ldMain = IA.getState(loadMain);
+
+        check(!ldFoo->mustContains(alloc), "[locInv_basic_must] Load's mustBeInv cannot contain 'alloc*'\n");
+        check(!ldFoo->mayContains(alloc), "[locInv_basic_must] Load's mayBeInv cannot contain 'alloc*'\n");
+        check(ldMain->mustContains(alloc), "[locInv_basic_must] Load's mustBeInv does not contain 'alloc*'\n");
+        check(!ldMain->mayContains(alloc), "[locInv_basic_must] Load's mayBeInv cannot contain 'alloc*'\n");
+
+        check(!loadFoo->doesPointsTo(INVALIDATED), "[locInv_basic_must] Load cannot point to INV\n");
+        check(loadMain->doesPointsTo(INVALIDATED), "[locInv_basic_must] Load does not point to INV\n");
+        check(!loadMain->doesPointsTo(alloc), "[locInv_basic_must] Load cannot point to 'alloc'\n")
     }
 
     void locInv_basic_may() {
         using namespace analysis;
         PointerGraph PS;
         /*
-               [entry]
+               [entryMain]
                  |   \
                  |    [call]
                  |          \
-                 |           [entry]
+                 |           [entryFoo]
                  |              |
                  |           [alloc]
                  |              |
-                 |          [load]
+                 |          [loadFoo]
                  |              |
-                 |           [return]
+                 |           [retFoo]
                  |          /
                  |  [call_return]
                   \    /
-               [test_load] // alloc must be inv
+               [loadMain] // alloc may be inv
+                    |
+                 [retMain]
+         */
+
+        PSNodeEntry* entryMain = PSNodeEntry::cast(PS.create(PSNodeType::ENTRY));
+        PSNodeCall* call = PSNodeCall::cast(PS.create(PSNodeType::CALL));
+        PSNodeEntry* entryFoo = PSNodeEntry::cast(PS.create(PSNodeType::ENTRY));
+        PSNodeAlloc* alloc = PSNodeAlloc::cast(PS.create(PSNodeType::ALLOC));
+        PSNode* loadFoo = PS.create(PSNodeType::LOAD, alloc);
+        PSNodeRet* retFoo = PSNodeRet::get(PS.create(PSNodeType::RETURN, entryFoo));
+        PSNodeCallRet* callRet = PSNodeCallRet::cast(PS.create(PSNodeType::CALL_RETURN, call));
+        PSNode* loadMain = PS.create(PSNodeType::LOAD, alloc);
+        PSNodeRet* retMain = PSNodeRet::get(PS.create(PSNodeType::RETURN, entryMain));
+
+        entryMain->addSuccessor(call);
+        entryMain->addSuccessor(loadMain);
+        call->addSuccessor(callRet);
+        callRet->addSuccessor(loadMain);
+        loadMain->addSuccessor(retMain);
+
+        entryFoo->addSuccessor(alloc);
+        alloc->addSuccessor(loadFoo);
+        loadFoo->addSuccessor(retFoo);
+        retFoo->addSuccessor(callRet);
+
+        call->addOperand(callRet);
+        callRet->addOperand(retFoo);
+        callRet->addReturn(retFoo);
+
+        auto* mainSubG = PS.createSubgraph(entryMain);
+        entryMain->setParent(mainSubG);
+        call->setParent(mainSubG);
+        loadMain->setParent(mainSubG);
+        callRet->setParent(mainSubG);
+        retMain->setParent(mainSubG);
+
+        auto* fooSubG = PS.createSubgraph(entryFoo);
+        entryFoo->setParent(fooSubG);
+        alloc->setParent(fooSubG);
+        loadFoo->setParent(fooSubG);
+        retFoo->setParent(fooSubG);
+
+        loadFoo->addPointsTo(alloc, 0);
+        loadMain->addPointsTo(alloc, 0);
+
+        InvalidatedAnalysis IA(&PS);
+        IA.run();
+
+        St* ldFoo = IA.getState(loadFoo);
+        St* ldMain = IA.getState(loadMain);
+
+        check(!ldFoo->mustContains(alloc), "[locInv_basic_may] Load's mustBeInv cannot contain 'alloc*'\n");
+        check(!ldFoo->mayContains(alloc), "[locInv_basic_may] Load's mayBeInv cannot contain 'alloc*'\n");
+        check(!ldMain->mustContains(alloc), "[locInv_basic_may] Load's mustBeInv cannot contain 'alloc*'\n");
+        check(ldMain->mayContains(alloc), "[locInv_basic_may] Load's mayBeInv cannot contain 'alloc*'\n");
+
+        check(loadFoo->doesPointsTo(alloc), "[locInv_basic_may] Load does not point to 'alloc'\n");
+        check(!loadFoo->doesPointsTo(INVALIDATED), "[locInv_basic_may] Load cannot point to INV\n");
+        check(loadMain->doesPointsTo(alloc), "[locInv_basic_may] Load does not point to alloc\n");
+        check(loadMain->doesPointsTo(INVALIDATED), "[locInv_basic_may] Load does not point to INV\n");
+
+    }
+
+
+    void glob_valid() {
+        /*
+                 [entryMain]                   [glob X = 42]
+                      |
+                   [call]
+                         \
+                         [entryFoo]
+                             |
+                          [alloc]
+                             |
+                          [store]
+                             |
+                          [retFoo]
+                           /
+                 [callRet]
+                     |
+                  [load]
+                     |
+                 [retMain]
          */
     }
 
+    void glob_basic_inv() {
+        using namespace analysis;
+        PointerGraph PS;
+        /*
+                 [entryMain]                   [global PTR*]
+                      |
+                   [call]
+                         \
+                         [entryFoo]
+                             |
+                          [alloc int] // int x;
+                             |
+                          [store]     // PTR = &x;
+                             |
+                          [retFoo]
+                           /
+                 [callRet]
+                     |
+                  [load]              // load *PTR
+                     |
+                 [retMain]
+
+         */
+
+        PSNodeAlloc* global = PSNodeAlloc::cast(PS.create(PSNodeType::ALLOC));
+        global->setIsGlobal();
+        global->setParent(nullptr);
+        global->addPointsTo(global, 0);
+
+        PSNodeEntry* entryMain = PSNodeEntry::cast(PS.create(PSNodeType::ENTRY));
+        PSNodeCall* call = PSNodeCall::cast(PS.create(PSNodeType::CALL));
+        PSNodeEntry* entryFoo = PSNodeEntry::cast(PS.create(PSNodeType::ENTRY));
+        PSNodeAlloc* alloc = PSNodeAlloc::cast(PS.create(PSNodeType::ALLOC));
+        PSNode* store = PS.create(PSNodeType::STORE, alloc, global);
+        PSNode* loadFoo = PS.create(PSNodeType::LOAD, global);
+        PSNodeRet* retFoo = PSNodeRet::get(PS.create(PSNodeType::RETURN, entryFoo));
+        PSNodeCallRet* callRet = PSNodeCallRet::cast(PS.create(PSNodeType::CALL_RETURN, call));
+        PSNode* loadMain = PS.create(PSNodeType::LOAD, global);
+        PSNode* retMain = PSNodeRet::get(PS.create(PSNodeType::RETURN, entryMain));
+
+        entryMain->addSuccessor(call);
+        call->addSuccessor(callRet);
+        callRet->addSuccessor(retMain);
+
+        entryFoo->addSuccessor(alloc);
+        alloc->addSuccessor(store);
+        store->addSuccessor(loadFoo);
+        loadFoo->addSuccessor(retFoo);
+
+        call->addOperand(callRet);
+        callRet->addOperand(retFoo);
+        callRet->addReturn(retFoo);
+
+        auto* mainSubG = PS.createSubgraph(entryMain);
+        auto* fooSubG = PS.createSubgraph(entryFoo);
+
+        entryMain->setParent(mainSubG);
+        call->setParent(mainSubG);
+        callRet->setParent(mainSubG);
+        loadMain->setParent(mainSubG);
+        retMain->setParent(mainSubG);
+
+        entryFoo->setParent(fooSubG);
+        alloc->setParent(fooSubG);
+        store->setParent(fooSubG);
+        loadFoo->setParent(fooSubG);
+        retFoo->setParent(fooSubG);
+
+        loadFoo->addPointsTo(global, 0);
+        loadMain->addPointsTo(global, 0);
+
+        global->addOperand(alloc);
+
+        InvalidatedAnalysis IA(&PS);
+        IA.run();
+
+        St* ldFoo = IA.getState(loadFoo);
+        St* ldMain = IA.getState(loadMain);
+
+        // TODO: find out / ask: how to store an address to pointer variable?
+
+        check(!ldFoo->mustContains(global), "[glob_basic_inv] load cannot contain global in must set\n");
+        check(!ldFoo->mayContains(global), "[glob_basic_inv] load cannot contain global in may set\n");
+        check(ldMain->mustContains(alloc), "[glob_basic_inv] load must contain global in must set\n");
+        check(!ldMain->mustContains(global), "[glob_basic_inv] load cannot contain global in may set\n");
+
+        check(!loadFoo->doesPointsTo(INVALIDATED), "[glob_basic_inv] loadFoo cannot point to INV\n");
+        check(loadMain->doesPointsTo(INVALIDATED), "[glob_basic_inv] loadMain must point to INV\n");
+
+    }
+
+
     void test() {
-//        memLeak_basic_must();
-//        memLeak_basic_may();
+        memLeak_basic_must();
+        memLeak_basic_may();
 
         memLeak_must1();
         memLeak_may1();
 
-//        locInv_basic_must();
-//        locInv_basic_may();
+        locInv_basic_must();
+        locInv_basic_may();
+
+        glob_basic_inv();
     }
 };
 
