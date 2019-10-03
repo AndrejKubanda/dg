@@ -23,8 +23,6 @@ struct InvalidatedAnalysis {
 class InvalidatedAnalysis {
 #endif
 
-    //TODO: simple testing: points-to-test.cpp
-
     std::ofstream ofs = std::ofstream("invOutput");
 
     size_t numOfProcessedNodes = 0;
@@ -170,11 +168,8 @@ class InvalidatedAnalysis {
     static inline bool isRelevantNode(PSNode *node) {
         return node->getType() == PSNodeType::ALLOC ||
                node->getType() == PSNodeType::FREE ||
-               node->getType() == PSNodeType::INVALIDATE_LOCALS ||
-               node->getType() == PSNodeType::CALL ||
-               node->getType() == PSNodeType::RETURN ||
-               node->getType() == PSNodeType::CALL_RETURN; /* ||
-               node->getType() == PSNodeType::INVALIDATE_OBJECT;*/
+               node->getType() == PSNodeType::ENTRY ||
+               node->getType() == PSNodeType::RETURN;
     }
 
     static inline bool noChange(PSNode *node) {
@@ -210,18 +205,15 @@ class InvalidatedAnalysis {
     }
 
     bool decideMustOrMay(PSNode* node, PSNode* target) {
-        // if (debugPrint) ofs << "[must or may]\n";
         State* state = getState(node);
         size_t mustSize = state->mustBeInv.size();
         size_t maySize = state->mayBeInv.size();
         size_t pointsToSize = node->getOperand(0)->pointsTo.size();
 
-        if (pointsToSize == 1) {
+        if (pointsToSize == 1)
             state->mustBeInv.insert(target);
-        } else if (pointsToSize > 1) {
+        else if (pointsToSize > 1)
             state->mayBeInv.insert(target);
-        }
-        // if (debugPrint) ofs << "[inserted target " << target->getID() << "]\n";
 
         return mustSize != state->mustBeInv.size() || maySize != state->mayBeInv.size();
     }
@@ -229,63 +221,54 @@ class InvalidatedAnalysis {
     bool processNode(PSNode *node, parentsMap& parentToLocalsMap) {
         assert(node && node->getID() < _states.size());
         numOfProcessedNodes++;
-        //ofs << "............processing " << PSNodeTypeToCString(node->getType()) << "[" << node->getID() << "]\n";
+        ofs << "<" << node->getID() << "> "<< PSNodeTypeToCString(node->getType()) << '\n';
         PSNode _nodeBefore = *node; // debug
         State _stateBefore = *getState(node); // debug
 
         if (noChange(node)) {
+            // TODO: has to be outside noChange if multiple returns can progress into single CALL_RETURN
+            if (isa<PSNodeType::CALL_RETURN>(node)) {
+                auto& returns = PSNodeCallRet::cast(node)->getReturns();
+                getState(node)->updateState(returns, this);
+                return false;
+            }
+
             auto pred = node->getSinglePredecessor();
             assert(pred->getID() <_states.size());
-
             _mapping[node->getID()] = getState(pred);
             return false;
         }
 
         bool changed = false;
-
-        if (isa<PSNodeType::FREE>(node)) {
-            for (const auto& ptrStruct : node->getOperand(0)->pointsTo) {
-                changed |= decideMustOrMay(node, ptrStruct.target);
-            }
-        }
-
-        std::vector<PSNode*> preds = node->getPredecessors();
+        auto preds = node->getPredecessors();
         State* st = getState(node);
 
-        if (isa<PSNodeType::ENTRY>(node)) {
-            auto& callers = PSNodeEntry::cast(node)->getCallers();
+        if ( auto* alloc = PSNodeAlloc::get(node)) {
+            if (!alloc->isHeap() && !alloc->isGlobal()) // TODO: not alloc but store node has info about Global var (?)
+                parentToLocalsMap.at(node->getParent()->getID()).emplace(node);
+
+        } else if (isa<PSNodeType::FREE>(node)) {
+            for (const auto& ptrStruct : node->getOperand(0)->pointsTo)
+                changed |= decideMustOrMay(node, ptrStruct.target);
+
+        } else if (auto* entry = PSNodeEntry::get(node)) {
+            auto& callers = entry->getCallers();
             preds.insert(preds.end(), callers.begin(), callers.end());
             auto search = parentToLocalsMap.find(node->getParent()->getID());
-            if (search == parentToLocalsMap.end()) {
+            if (search == parentToLocalsMap.end())
                 parentToLocalsMap.emplace(std::pair<unsigned, std::set<PSNode*>>(node->getParent()->getID(), {}));
-            }
-        }
 
-        // this part should be later optimized. No need to perform this anymore after first walk
-        if ( PSNodeAlloc* alloc = PSNodeAlloc::get(node)) {
-            if (!alloc->isHeap() && !alloc->isGlobal()) { // TODO: not alloc but store node has info about Global var
-                // map has the function, we can add PSNode* to its container*/
-                /*changed |= */parentToLocalsMap.at(node->getParent()->getID()).emplace(node)/*.second*/;
-            }
-        }
-
-        if (isa<PSNodeType::RETURN>(node)) {
-            for (auto& nd : parentToLocalsMap.at(node->getParent()->getID())) {
+        } else if (isa<PSNodeType::RETURN>(node)) {
+            for (auto& nd : parentToLocalsMap.at(node->getParent()->getID()))
                 changed |= st->mustBeInv.emplace(nd).second;
-            }
-        }
-        if (isa<PSNodeType::CALL_RETURN>(node)) {
-            auto& returns = PSNodeCallRet::cast(node)->getReturns(); // dynamic cast is not possible (?)
-            // info about states propagates like this: CALL --> ENTRY --> RETURN --> CALLRETURN
-            preds.clear(); // therefore we dont want to have certain pointers twice in preds vector
-            preds.insert(preds.end(), returns.begin(), returns.end());
         }
 
         changed |= getState(node)->updateState(preds, this);
-        //std::cout << getState(node)->_tmpStateToString() << '\n';
+
         if (changed)
-            ofs << "changed: <" << node->getID() << "> " <<  PSNodeTypeToCString(node->getType()) << '\n'
+            ofs << "  hanged: <" << node->getID() << "> " <<  PSNodeTypeToCString(node->getType()) << '\n'
             << _tmpCompareChanges(&_stateBefore, getState(node));
+
         return changed;
     }
 
