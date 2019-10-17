@@ -29,6 +29,8 @@ class InvalidatedAnalysis {
 
     using PSNodePtrSet = std::set<PSNode *>;
     using parentsMap = std::map<unsigned, std::set<PSNode*>>;
+    using CallStack = std::stack<PSNode*>;
+    using NodeStackPair = std::pair<PSNode*, CallStack>;
 
     struct State {
         PSNodePtrSet mustBeInv{};
@@ -204,6 +206,82 @@ class InvalidatedAnalysis {
                isRelevantNode(node);
     }
 
+    /*struct CSIdTracker {
+        std::vector<unsigned> remainingVisits;
+
+        CSIdTracker(PointerGraph* PS) : remainingVisits(PS->getNodes().size(), 1u) {
+            for (auto &subG : PS->getSubgraphs()) {
+                unsigned calleesSize = PSNodeEntry::cast(subG->getRoot())->getCallers().size();
+                if (calleesSize < 2)
+                    continue;
+                for (auto *nd : getReachableNodes(subG->getRoot(), nullptr, false)) {
+                    remainingVisits.at(nd->getID()) = calleesSize;
+                }
+            }
+        }
+    }; */
+
+    // TODO: prepare for recursive functions
+    // TODO: prepare for nodes which are not accessible by successor edges e.g. global vars
+    std::vector<unsigned> initVisited() const {
+        std::vector<unsigned> visited (PS->getNodes().size(), 1u);
+        for (auto& subG : PS->getSubgraphs()) {
+            unsigned calleesSize = PSNodeEntry::cast(subG->getRoot())->getCallers().size();
+            if (calleesSize < 2)
+                continue;
+            for (auto* nd : getReachableNodes(subG->getRoot(), nullptr, false)) {
+                visited.at(nd->getID()) = calleesSize;
+            }
+        }
+        return visited;
+    }
+
+    std::vector<NodeStackPair> initStacks() {
+        assert(PS->getNodes().size() >= 2 && "Why are you even testing a program with (<= 2) nodes?");
+
+        CallStack callStack;
+        std::vector<NodeStackPair> to_process;
+        auto visited = initVisited();
+
+        initNodeStack(PS->getEntry()->getRoot(), callStack, to_process, visited);
+        return to_process;
+    }
+
+    void initNodeStack(PSNode* nd, CallStack stack, std::vector<NodeStackPair>& to_process, std::vector<unsigned>& remainingVisits) {
+        ofs << _tmpNodeStackPairToString({ nd, stack }) << '\n';
+        assert(remainingVisits.at(nd->getID()) && "Visiting already visited node\n");
+
+        to_process.emplace_back(nd, stack);
+        --remainingVisits.at(nd->getID());
+
+        if (nd->getType() == PSNodeType::CALL) {
+            stack.push(nd);
+            for (auto *subG : PSNodeCall::cast(nd)->getCallees()) {
+                if (remainingVisits.at(subG->getRoot()->getID()))
+                    initNodeStack(subG->getRoot(), stack, to_process, remainingVisits);
+            }
+        } else if (nd->getType() == PSNodeType::RETURN) {
+            // callStack of main() is empty, we cant pop
+            if (nd->getParent()->getID() == 1)
+                return;
+
+            PSNode* callee = stack.top();
+            stack.pop();
+
+            for (auto* callRet : PSNodeRet::get(nd)->getReturnSites()) {
+                // I have to use getSinglePred because for some reason call does not have callRet attribute set
+                if (callRet == callee->getSingleSuccessor() && remainingVisits.at(callRet->getID()))
+                    initNodeStack(callRet, stack, to_process, remainingVisits);
+            }
+
+        } else {
+            for (auto* suc : nd->getSuccessors()) {
+                if (remainingVisits.at(suc->getID()))
+                    initNodeStack(suc, stack, to_process, remainingVisits);
+            }
+        }
+    }
+
     bool decideMustOrMay(PSNode* node, PSNode* target) {
         State* state = getState(node);
         size_t mustSize = state->mustBeInv.size();
@@ -227,8 +305,10 @@ class InvalidatedAnalysis {
 
         if (noChange(node)) {
             // TODO: has to be outside noChange if multiple returns can progress into single CALL_RETURN
+            // TODO: if more than 1 callRet are possible, then we cannot store the route in stack with single CALL*s
             if (isa<PSNodeType::CALL_RETURN>(node)) {
                 auto& returns = PSNodeCallRet::cast(node)->getReturns();
+                // TODO: use only possible call-returns
                 getState(node)->updateState(returns, this);
                 return false;
             }
@@ -244,7 +324,7 @@ class InvalidatedAnalysis {
         State* st = getState(node);
 
         if ( auto* alloc = PSNodeAlloc::get(node)) {
-            if (!alloc->isHeap() && !alloc->isGlobal()) // TODO: not alloc but store node has info about Global var (?)
+            if (!alloc->isHeap() && !alloc->isGlobal()) // not alloc but store node has info about Global var (?)
                 parentToLocalsMap.at(node->getParent()->getID()).emplace(node);
 
         } else if (isa<PSNodeType::FREE>(node)) {
@@ -358,6 +438,22 @@ class InvalidatedAnalysis {
         return ss.str();
     }
 
+    std::string _tmpNodeStackPairToString(NodeStackPair pair) const {
+        std::stringstream ss;
+        ss << '<' << pair.first->getID() << "> " << PSNodeTypeToCString(pair.first->getType()) << " callStack["
+        << pair.second.size() << "]: { ";
+        bool delim = false;
+        while (!pair.second.empty()) {
+            if (delim)
+                ss << ", ";
+            delim = true;
+            ss << pair.second.top()->getID();
+            pair.second.pop();
+        }
+        ss << " ] }";
+        return ss.str();
+    }
+
 public:
     explicit InvalidatedAnalysis(PointerGraph *ps)
     : PS(ps), _mapping(ps->size()), _states(ps->size()) {
@@ -368,23 +464,23 @@ public:
     }
 
     void run() {
-        std::vector<PSNode *> to_process;
-        std::vector<PSNode *> changed;
+        std::vector<NodeStackPair> to_process = initStacks();
+        for (auto& item : to_process)
+            ofs << _tmpNodeStackPairToString(item) << '\n';
+        std::vector<NodeStackPair> changed;
+
+        // I could use CallStack to differentiate between local vars in different calls of a function.
+        // It wouldn't help with calls from a loop or recursion
         std::map<unsigned, std::set<PSNode*>> parentToLocalsMap;
 
-        for (auto& nd : PS->getNodes()) {
-            if (nd)
-                to_process.push_back(nd.get());
-        }
-
-        while(!to_process.empty()) {
-            for (auto* nd : to_process) {
-                if (nd && processNode(nd, parentToLocalsMap)) {
-                    auto reachable = PS->getNodes(nd);
+        /*while(!to_process.empty()) {
+            for (auto& nodeAndStack : to_process) {
+                if (processNode(nodeAndStack.first, parentToLocalsMap)) {
+                    auto reachable = PS->getNodesContexSensitive(nodeAndStack);
                     if (debugPrint) {
                         ofs << "    (reachables ";
-                        for (auto node : reachable) {
-                            ofs << node->getID() << " ";
+                        for (auto& ndStack : reachable) {
+                            ofs << ndStack.first->getID() << " ";
                         }
                         ofs << ")\n\n";
                     }
@@ -393,7 +489,7 @@ public:
             }
             to_process.swap(changed);
             changed.clear();
-        }
+        }*/
 
         if (debugPrint) ofs << "processed: " << numOfProcessedNodes << "\n\n" << _tmpStatesToString() << '\n';
 
@@ -401,7 +497,6 @@ public:
             if (nd)
                 fixPointsTo(nd.get());
         }
-
     }
 };
 

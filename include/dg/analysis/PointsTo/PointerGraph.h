@@ -366,6 +366,72 @@ public:
         return cont;
     }
 
+
+    // LATER: try to make context-sensitive part of getNodes with parameter context-sensitive=true
+    // get nodes in BFS order and store them into the container
+    template <typename ContainerOrNodeOrNodeStackPair>
+    std::vector<std::pair<PSNode*, std::stack<PSNode*>>> getNodesContexSensitive(const ContainerOrNodeOrNodeStackPair& start,
+                                   bool interprocedural = true,
+                                   unsigned expected_num = 0)
+    {
+        using CallStack = std::stack<PSNode*>;
+        using NodeStackPair = std::pair<PSNode*, CallStack>;
+
+        ++dfsnum;
+
+        std::vector<NodeStackPair> cont;
+        if (expected_num != 0)
+            cont.reserve(expected_num);
+
+        struct DfsIdTracker {
+            const unsigned dfsnum;
+            DfsIdTracker(unsigned dnum) : dfsnum(dnum) {}
+
+            void visit(PSNode *n) { n->dfsid = dfsnum; }
+            bool visited(PSNode *n) const { return n->dfsid == dfsnum; }
+        };
+
+        // iterate over successors and call (return) edges
+        struct EdgeChooser {
+            const bool interproc;
+            EdgeChooser(bool inter = true) : interproc(inter) {}
+
+            void foreach(PSNode *cur, std::function<void(PSNode *)> Dispatch) {
+                if (interproc) {
+                    if (PSNodeCall *C = PSNodeCall::get(cur)) {
+                        for (auto subg : C->getCallees()) {
+                            Dispatch(subg->root);
+                        }
+                        // we do not need to iterate over succesors
+                        // if we dive into the procedure (as we will
+                        // return via call return)
+                        // NOTE: we must iterate over successors if the
+                        // function is undefined
+                        if (!C->getCallees().empty())
+                            return;
+                    } else if (PSNodeRet *R = PSNodeRet::get(cur)) {
+                        for (auto ret : R->getReturnSites()) {
+                            Dispatch(ret);
+                        }
+                        if (!R->getReturnSites().empty())
+                            return;
+                    }
+                }
+
+                for (auto s : cur->getSuccessors())
+                    Dispatch(s);
+            }
+        };
+
+        DfsIdTracker visitTracker(dfsnum);
+        EdgeChooser chooser(interprocedural);
+        BFS<PSNode, DfsIdTracker, EdgeChooser> bfs(visitTracker, chooser);
+
+        bfs.run(start, [&cont](NodeStackPair& pair) { cont.push_back(pair); });
+
+        return cont;
+    }
+
 };
 
 ///
