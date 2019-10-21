@@ -222,7 +222,7 @@ class InvalidatedAnalysis {
     }; */
 
     // TODO: prepare for recursive functions
-    // TODO: prepare for nodes which are not accessible by successor edges e.g. global vars
+
     std::vector<unsigned> initVisited() const {
         std::vector<unsigned> visited (PG->size(), 1u);
         for (auto& subG : PG->getSubgraphs()) {
@@ -266,6 +266,13 @@ class InvalidatedAnalysis {
             for (auto *subG : PSNodeCall::cast(nd)->getCallees()) {
                 if (remainingVisits.at(subG->getRoot()->getID()))
                     initNodeStack(subG->getRoot(), stack, to_process, remainingVisits);
+
+                // to fix this situation: CALL is visited (2x), ENTRY is visited(2x), therefore we dont progress
+                // into 3rd visit so the nodes past last CALL_RETURN are not visited 2x but only 1x eg. unsorted/recCycle.c
+                else if (PSNodeCall::cast(nd)->getPairedNode() && remainingVisits.at(PSNodeCall::cast(nd)->getPairedNode()->getID())) {
+                    stack.pop();
+                    initNodeStack(PSNodeCall::cast(nd)->getPairedNode(), stack, to_process, remainingVisits);
+                }
             }
         } else if (nd->getType() == PSNodeType::RETURN) {
             // callStack of main() is empty therefore we cannot pop
@@ -276,8 +283,7 @@ class InvalidatedAnalysis {
             stack.pop();
 
             for (auto* callRet : PSNodeRet::get(nd)->getReturnSites()) {
-                // I have to use getSinglePred because for some reason call does not have callRet attribute set
-                if (callRet == callee->getSingleSuccessor() && remainingVisits.at(callRet->getID()))
+                if (callRet == callee->getPairedNode() && remainingVisits.at(callRet->getID()))
                     initNodeStack(callRet, stack, to_process, remainingVisits);
             }
 
