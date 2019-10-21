@@ -161,7 +161,7 @@ class InvalidatedAnalysis {
         }
     };
 
-    PointerGraph* PS { nullptr };
+    PointerGraph* PG { nullptr };
 
     // mapping from PSNode's ID to States
     std::vector<State *> _mapping;
@@ -224,8 +224,8 @@ class InvalidatedAnalysis {
     // TODO: prepare for recursive functions
     // TODO: prepare for nodes which are not accessible by successor edges e.g. global vars
     std::vector<unsigned> initVisited() const {
-        std::vector<unsigned> visited (PS->getNodes().size(), 1u);
-        for (auto& subG : PS->getSubgraphs()) {
+        std::vector<unsigned> visited (PG->size(), 1u);
+        for (auto& subG : PG->getSubgraphs()) {
             unsigned calleesSize = PSNodeEntry::cast(subG->getRoot())->getCallers().size();
             if (calleesSize < 2)
                 continue;
@@ -237,31 +237,38 @@ class InvalidatedAnalysis {
     }
 
     std::vector<NodeStackPair> initStacks() {
-        assert(PS->getNodes().size() >= 2 && "Why are you even testing a program with (<= 2) nodes?");
+        assert(PG->size() >= 2 && "Why are you even testing a program with (<= 2) nodes?");
 
         CallStack callStack;
         std::vector<NodeStackPair> to_process;
         auto visited = initVisited();
 
-        initNodeStack(PS->getEntry()->getRoot(), callStack, to_process, visited);
+        if (debugPrint) {
+            ofs << "visited { ";
+            for (auto u : visited)
+                ofs << u << ' ';
+            ofs << "}\n";
+        }
+
+        initNodeStack(PG->getEntry()->getRoot(), callStack, to_process, visited);
         return to_process;
     }
 
     void initNodeStack(PSNode* nd, CallStack stack, std::vector<NodeStackPair>& to_process, std::vector<unsigned>& remainingVisits) {
-        ofs << _tmpNodeStackPairToString({ nd, stack }) << '\n';
         assert(remainingVisits.at(nd->getID()) && "Visiting already visited node\n");
+        ofs << _tmpNodeStackPairToString({ nd, stack }) << '\n';
 
         to_process.emplace_back(nd, stack);
         --remainingVisits.at(nd->getID());
 
-        if (nd->getType() == PSNodeType::CALL) {
+        if (nd->getType() == PSNodeType::CALL /*|| nd->getType() == PSNodeType::CALL_FUNCPTR*/) {
             stack.push(nd);
             for (auto *subG : PSNodeCall::cast(nd)->getCallees()) {
                 if (remainingVisits.at(subG->getRoot()->getID()))
                     initNodeStack(subG->getRoot(), stack, to_process, remainingVisits);
             }
         } else if (nd->getType() == PSNodeType::RETURN) {
-            // callStack of main() is empty, we cant pop
+            // callStack of main() is empty therefore we cannot pop
             if (nd->getParent()->getID() == 1)
                 return;
 
@@ -418,7 +425,7 @@ class InvalidatedAnalysis {
 
     std::string _tmpStatesToString() const {
         std::stringstream ss;
-        for (auto& nd : PS->getNodes()) {
+        for (auto& nd : PG->getNodes()) {
             if (!nd)
                 continue;
             const State* st = getState(nd.get());
@@ -455,9 +462,9 @@ class InvalidatedAnalysis {
     }
 
 public:
-    explicit InvalidatedAnalysis(PointerGraph *ps)
-    : PS(ps), _mapping(ps->size()), _states(ps->size()) {
-        for (size_t i = 1; i < ps->size(); ++i) {
+    explicit InvalidatedAnalysis(PointerGraph *pg)
+    : PG(pg), _mapping(pg->size()), _states(pg->size()) {
+        for (size_t i = 1; i < pg->size(); ++i) {
             _states[i] = llvm::make_unique<State>();
             _mapping[i] = _states[i].get();
         }
@@ -465,8 +472,6 @@ public:
 
     void run() {
         std::vector<NodeStackPair> to_process = initStacks();
-        for (auto& item : to_process)
-            ofs << _tmpNodeStackPairToString(item) << '\n';
         std::vector<NodeStackPair> changed;
 
         // I could use CallStack to differentiate between local vars in different calls of a function.
@@ -493,7 +498,7 @@ public:
 
         if (debugPrint) ofs << "processed: " << numOfProcessedNodes << "\n\n" << _tmpStatesToString() << '\n';
 
-        for (auto& nd : PS->getNodes()) {
+        for (auto& nd : PG->getNodes()) {
             if (nd)
                 fixPointsTo(nd.get());
         }
