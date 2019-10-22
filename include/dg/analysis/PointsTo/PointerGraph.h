@@ -367,11 +367,10 @@ public:
     }
 
 
-    // LATER: try to make context-sensitive part of getNodes with parameter context-sensitive=true
     // get nodes in BFS order and store them into the container
     template <typename ContainerOrNodeOrNodeStackPair>
     std::vector<std::pair<PSNode*, std::stack<PSNode*>>> getNodesContexSensitive(const ContainerOrNodeOrNodeStackPair& start,
-                                   bool interprocedural = true,
+                                   std::vector<unsigned> visited,
                                    unsigned expected_num = 0)
     {
         using CallStack = std::stack<PSNode*>;
@@ -383,51 +382,65 @@ public:
         if (expected_num != 0)
             cont.reserve(expected_num);
 
-        struct DfsIdTracker {
-            const unsigned dfsnum;
-            DfsIdTracker(unsigned dnum) : dfsnum(dnum) {}
+        struct IdTrackerIA {
+            std::vector<unsigned> remainingVisits;
 
-            void visit(PSNode *n) { n->dfsid = dfsnum; }
-            bool visited(PSNode *n) const { return n->dfsid == dfsnum; }
+            IdTrackerIA(std::vector<unsigned> visits) : remainingVisits(std::move(visits)) {}
+
+            void visit(NodeStackPair* pair) {
+                --remainingVisits.at(pair->first->getID());
+            }
+
+            bool visited(NodeStackPair* pair) {
+                return remainingVisits.at(pair->first->getID()) == 0;
+            }
         };
 
         // iterate over successors and call (return) edges
         struct EdgeChooser {
-            const bool interproc;
-            EdgeChooser(bool inter = true) : interproc(inter) {}
+            EdgeChooser() = default;
 
-            void foreach(PSNode *cur, std::function<void(PSNode *)> Dispatch) {
-                if (interproc) {
-                    if (PSNodeCall *C = PSNodeCall::get(cur)) {
-                        for (auto subg : C->getCallees()) {
-                            Dispatch(subg->root);
-                        }
-                        // we do not need to iterate over succesors
-                        // if we dive into the procedure (as we will
-                        // return via call return)
-                        // NOTE: we must iterate over successors if the
-                        // function is undefined
-                        if (!C->getCallees().empty())
-                            return;
-                    } else if (PSNodeRet *R = PSNodeRet::get(cur)) {
-                        for (auto ret : R->getReturnSites()) {
-                            Dispatch(ret);
-                        }
-                        if (!R->getReturnSites().empty())
-                            return;
+            void foreach(NodeStackPair *cur, std::function<void(NodeStackPair*)> Dispatch) {
+                NodeStackPair copy = *cur;
+                if (PSNodeCall *C = PSNodeCall::get(cur->first)) {
+                    copy.second.push(cur->first);
+                    for (auto subg : C->getCallees()) {
+                        copy.first = subg->getRoot();
+                        Dispatch(&copy);
                     }
+                    // we do not need to iterate over succesors
+                    // if we dive into the procedure (as we will
+                    // return via call return)
+                    // NOTE: we must iterate over successors if the
+                    // function is undefined
+                    if (!C->getCallees().empty())
+                        return;
+                } else if (PSNodeRet *R = PSNodeRet::get(cur->first)) {
+                    for (auto ret : R->getReturnSites()) {
+                        // TODO: if there is unknown return site, we have to Dispatch all returns
+                        // atm there is no unknown call in call stacks
+                        if (ret == cur->second.top()) {
+                            copy.first = ret;
+                            copy.second.pop();
+                            Dispatch(&copy);
+                        }
+                    }
+                    if (!R->getReturnSites().empty())
+                        return;
                 }
 
-                for (auto s : cur->getSuccessors())
-                    Dispatch(s);
+                for (auto s : cur->first->getSuccessors()) {
+                    copy.first = s;
+                    Dispatch(&copy);
+                }
             }
         };
 
-        DfsIdTracker visitTracker(dfsnum);
-        EdgeChooser chooser(interprocedural);
-        BFS<PSNode, DfsIdTracker, EdgeChooser> bfs(visitTracker, chooser);
+        IdTrackerIA visitTracker(std::move(visited));
+        EdgeChooser chooser;
+        BFS<NodeStackPair, IdTrackerIA, EdgeChooser> bfs(visitTracker, chooser);
 
-        bfs.run(start, [&cont](NodeStackPair& pair) { cont.push_back(pair); });
+        bfs.run(start, [&cont](NodeStackPair* pair) { cont.push_back(*pair); });
 
         return cont;
     }

@@ -66,7 +66,8 @@ class NodesWalk {
     VisitTracker _visits{};
     Queue _queue{};
 
-    void _enqueue(Node *n) {
+    template <typename T>
+    void _enqueue(T *n) {
         _queue.push(n);
         _visits.visit(n);
     }
@@ -119,12 +120,6 @@ public:
     void run(Node *start, Func F) {
         _enqueue(start);
         _run(F);
-    }
-
-    template <typename Func>
-    void run(std::pair<Node*, std::stack<Node*>>& pairStart, Func F) {
-        _enqueue(pairStart); // TODO: templated Queue has to be ready for pairs instead of single node*
-        _run(F); // TODO: implement new run for pairs instead of a single node*
     }
 
     template <typename Func, typename Container>

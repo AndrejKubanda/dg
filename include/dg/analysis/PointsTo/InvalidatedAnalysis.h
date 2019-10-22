@@ -206,42 +206,25 @@ class InvalidatedAnalysis {
                isRelevantNode(node);
     }
 
-    /*struct CSIdTracker {
-        std::vector<unsigned> remainingVisits;
-
-        CSIdTracker(PointerGraph* PS) : remainingVisits(PS->getNodes().size(), 1u) {
-            for (auto &subG : PS->getSubgraphs()) {
-                unsigned calleesSize = PSNodeEntry::cast(subG->getRoot())->getCallers().size();
-                if (calleesSize < 2)
-                    continue;
-                for (auto *nd : getReachableNodes(subG->getRoot(), nullptr, false)) {
-                    remainingVisits.at(nd->getID()) = calleesSize;
-                }
-            }
-        }
-    }; */
-
     // TODO: prepare for recursive functions
-
-    std::vector<unsigned> initVisited() const {
+    static std::vector<unsigned> initVisited(const PointerGraph* PG) {
         std::vector<unsigned> visited (PG->size(), 1u);
         for (auto& subG : PG->getSubgraphs()) {
             unsigned calleesSize = PSNodeEntry::cast(subG->getRoot())->getCallers().size();
-            if (calleesSize < 2)
-                continue;
-            for (auto* nd : getReachableNodes(subG->getRoot(), nullptr, false)) {
-                visited.at(nd->getID()) = calleesSize;
-            }
+            if (calleesSize >= 2)
+                for (auto* nd : getReachableNodes(subG->getRoot(), nullptr, false)) {
+                    visited.at(nd->getID()) = calleesSize;
+                }
         }
         return visited;
     }
 
-    std::vector<NodeStackPair> initStacks() {
+    std::vector<NodeStackPair> initStacks(std::vector<unsigned> remainingVisits) {
         assert(PG->size() >= 2 && "Why are you even testing a program with (<= 2) nodes?");
 
         CallStack callStack;
         std::vector<NodeStackPair> to_process;
-        auto visited = initVisited();
+        auto visited = std::move(remainingVisits);
 
         if (debugPrint) {
             ofs << "visited { ";
@@ -414,6 +397,172 @@ class InvalidatedAnalysis {
         }
     }
 
+    struct CallstackNode {
+        PSNode* callNode{nullptr};
+        CallstackNode* parent{nullptr};
+        std::vector<std::unique_ptr<CallstackNode>> children;
+
+        CallstackNode() = default;
+
+        CallstackNode(PSNode* callNd) : callNode(callNd) {}
+
+        CallstackNode(PSNode* callNd, CallstackNode* parentNd) : callNode(callNd), parent(parentNd) {}
+
+
+        bool isRoot() const {
+            return callNode == nullptr && parent == nullptr;
+        }
+
+        bool isLeaf() const {
+            return children.empty();
+        };
+
+        CallstackNode* hasChild(PSNode* call) const {
+            for (auto& nd : children) {
+                if (call == nd->callNode)
+                    return nd.get();
+            }
+            return nullptr;
+        }
+
+        // called upon a top node
+        // either returns a new pointer or creates new child and returns new top pointer
+        CallstackNode* push(PSNode* call) {
+            auto child = hasChild(call);
+            if (!child) {
+                children.emplace_back(llvm::make_unique<CallstackNode>(call, this));
+                return (--children.end())->get();
+            }
+            return child;
+        }
+
+        CallstackNode* pop() {
+            if (parent)
+                return parent;
+            return this;
+        }
+    };
+
+    class WalkCS {
+        struct IdTrackerIA {
+            std::vector<unsigned> remainingVisits;
+
+            IdTrackerIA(std::vector<unsigned> visits) : remainingVisits(std::move(visits)) {}
+
+            void visit(NodeStackPair* pair) {
+                --remainingVisits.at(pair->first->getID());
+            }
+
+            bool visited(NodeStackPair* pair) {
+                return remainingVisits.at(pair->first->getID()) == 0;
+            }
+        };
+
+        struct EdgeChooser {
+            EdgeChooser() = default;
+
+            NodeStackPair getSuccs(NodeStackPair* current) {
+
+            }
+
+            void foreach(NodeStackPair *cur, std::function<void(NodeStackPair*)> Dispatch) {
+//                NodeStackPair copy = *cur;
+                if (PSNodeCall *C = PSNodeCall::get(cur->first)) {
+//                    copy.second.push(cur->first);
+                    for (auto subg : C->getCallees()) {
+//                        copy.first = subg->getRoot();
+//                        Dispatch(&copy);
+                    }
+                    // we do not need to iterate over succesors
+                    // if we dive into the procedure (as we will
+                    // return via call return)
+                    // NOTE: we must iterate over successors if the
+                    // function is undefined
+                    if (!C->getCallees().empty())
+                        return;
+                } else if (PSNodeRet *R = PSNodeRet::get(cur->first)) {
+                    for (auto ret : R->getReturnSites()) {
+                        // TODO: if there is unknown return site, we have to Dispatch all returns
+                        // atm there is no unknown call in call stacks
+                        if (ret == cur->second.top()) {
+//                            copy.first = ret;
+//                            copy.second.pop();
+//                            Dispatch(&copy);
+                        }
+                    }
+                    if (!R->getReturnSites().empty())
+                        return;
+                }
+
+                for (auto s : cur->first->getSuccessors()) {
+//                    copy.first = s;
+//                    Dispatch(&copy);
+                }
+            }
+        };
+
+        QueueFIFO<NodeStackPair*> _queue;
+        IdTrackerIA _visits;
+        EdgeChooser _chooser;
+
+        template <typename T>
+        void _enqueue(T *n) {
+            _queue.push(n);
+            _visits.visit(n);
+        }
+
+    public:
+        WalkCS(std::vector<unsigned> visits) : _visits(IdTrackerIA(std::move(visits))), _chooser(EdgeChooser{}) {}
+
+        std::vector<NodeStackPair> run(NodeStackPair& start) {
+            _queue = {};
+            auto visitTracker = _visits;
+            std::vector<NodeStackPair> cont;
+            auto append = [&cont](NodeStackPair* curr){ cont.push_back(*curr); };
+
+            _enqueue(&start);
+
+            while (!_queue.empty()) {
+                NodeStackPair* current = _queue.pop();
+
+                append(current);
+
+                _chooser.foreach(current,
+                                 [&](NodeStackPair *n) {
+                                     if (!_visits.visited(n)) {
+                                         _enqueue(n);
+                                     }
+                                 });
+            }
+
+
+            return cont;
+        }
+    };
+
+    /*
+    std::vector<NodeStackPair> getReachables(NodeStackPair* start, std::vector<unsigned> remainingVisits) const {
+        QueueFIFO<NodeStackPair *> fifo;
+        std::vector<NodeStackPair> cont;
+
+        auto visit = [&remainingVisits](NodeStackPair* pair){ --remainingVisits.at(pair->first->getID()); };
+        auto visited = [&remainingVisits](NodeStackPair* pair){ return remainingVisits.at(pair->first->getID()) == 0; };
+
+        fifo.push(start);
+
+        while (!fifo.empty()) {
+            NodeStackPair* cur = fifo.pop();
+            visit(cur);
+
+            if (PSNodeCall* C = PSNodeCall::get(cur->first)) {
+
+                for (auto subg : C->getCallees()) {
+
+                }
+            }
+        }
+    }*/
+
     std::string _tmpPointsToToString(const PSNode *node) const {
         std::stringstream ss;
         bool delim = false;
@@ -477,31 +626,38 @@ public:
     }
 
     void run() {
-        std::vector<NodeStackPair> to_process = initStacks();
+        auto visited = initVisited(PG);
+        std::vector<NodeStackPair> to_process = initStacks(visited);
         std::vector<NodeStackPair> changed;
 
         // I could use CallStack to differentiate between local vars in different calls of a function.
         // It wouldn't help with calls from a loop or recursion
         std::map<unsigned, std::set<PSNode*>> parentToLocalsMap;
 
-        /*while(!to_process.empty()) {
-            for (auto& nodeAndStack : to_process) {
-                if (processNode(nodeAndStack.first, parentToLocalsMap)) {
-                    auto reachable = PS->getNodesContexSensitive(nodeAndStack);
+        WalkCS walk(visited);
+
+        CallstackNode root;
+
+/*
+        while(!to_process.empty()) {
+            for (auto& nodeStackPair : to_process) {
+                if (processNode(nodeStackPair.first, parentToLocalsMap)) {
+                    auto reachables = walk.run(nodeStackPair);
+                    //auto reachables = PG->getNodesContexSensitive(&nodeStackPair, visited);
                     if (debugPrint) {
                         ofs << "    (reachables ";
-                        for (auto& ndStack : reachable) {
+                        for (auto& ndStack : reachables) {
                             ofs << ndStack.first->getID() << " ";
                         }
                         ofs << ")\n\n";
                     }
-                    changed.insert(changed.end(), reachable.begin(), reachable.end());
+                    changed.insert(changed.end(), reachables.begin(), reachables.end());
                 }
             }
             to_process.swap(changed);
             changed.clear();
-        }*/
-
+        }
+*/
         if (debugPrint) ofs << "processed: " << numOfProcessedNodes << "\n\n" << _tmpStatesToString() << '\n';
 
         for (auto& nd : PG->getNodes()) {
