@@ -409,8 +409,8 @@ class InvalidatedAnalysis {
         CallstackNode(PSNode* callNd, CallstackNode* parentNd) : callNode(callNd), parent(parentNd) {}
 
 
-        bool isRoot() const {
-            return callNode == nullptr && parent == nullptr;
+        bool empty() const {
+            return callNode == nullptr;
         }
 
         bool isLeaf() const {
