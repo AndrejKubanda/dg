@@ -29,10 +29,75 @@ class InvalidatedAnalysis {
 
     using PSNodePtrSet = std::set<PSNode *>;
     using parentsMap = std::map<unsigned, std::set<PSNode*>>;
-    using CallStack = std::stack<PSNode*>;
-    using NodeStackPair = std::pair<PSNode*, CallStack>;
+
+    struct CallstackNode {
+                PSNode* callNode{nullptr};
+                CallstackNode* parent{nullptr};
+                std::vector<std::unique_ptr<CallstackNode>> children;
+
+                CallstackNode() = default;
+
+                CallstackNode(PSNode* callNd) : callNode(callNd) {}
+
+                CallstackNode(PSNode* callNd, CallstackNode* parentNd) : callNode(callNd), parent(parentNd) {}
+
+
+                bool empty() const {
+                    return callNode == nullptr;
+                }
+
+                bool isLeaf() const {
+                    return children.empty();
+                };
+
+                CallstackNode* hasChild(PSNode* call) const {
+                    for (auto& nd : children) {
+                        if (call == nd->callNode)
+                            return nd.get();
+                    }
+                    return nullptr;
+                }
+
+                // called upon a top node
+                // either returns a new pointer or creates new child and returns new top pointer
+                CallstackNode* push(PSNode* call) {
+                    auto child = hasChild(call);
+                    if (!child) {
+                        children.emplace_back(llvm::make_unique<CallstackNode>(call, this));
+                        return (--children.end())->get();
+                    }
+                    return child;
+                }
+
+                CallstackNode* pop() {
+                    if (parent)
+                        return parent;
+                    return this;
+                }
+
+                std::string toString() {
+                    std::vector<PSNode*> cont;
+                    auto* nd = this;
+                    while (nd->callNode) {
+                        cont.push_back(nd->callNode);
+                        nd = nd->pop();
+                    }
+
+                    std::stringstream ss;
+                    ss << "callStack {";
+                    for (auto n : cont) {
+                        ss << n->getID() << ' ';
+                    }
+                    ss << "-|}";
+
+                    return ss.str();
+                }
+            };
+
+    using NodeStackPair = std::pair<PSNode*, CallstackNode*>;
 
     struct State {
+        // TODO: State has info about callStack -> differentiate between local variables
         PSNodePtrSet mustBeInv{};
         PSNodePtrSet mayBeInv{};
         /*
@@ -219,10 +284,9 @@ class InvalidatedAnalysis {
         return visited;
     }
 
-    std::vector<NodeStackPair> initStacks(std::vector<unsigned> remainingVisits) {
+    std::vector<NodeStackPair> initStacks(std::vector<unsigned> remainingVisits, CallstackNode* stackTop) {
         assert(PG->size() >= 2 && "Why are you even testing a program with (<= 2) nodes?");
 
-        CallStack callStack;
         std::vector<NodeStackPair> to_process;
         auto visited = std::move(remainingVisits);
 
@@ -233,28 +297,30 @@ class InvalidatedAnalysis {
             ofs << "}\n";
         }
 
-        initNodeStack(PG->getEntry()->getRoot(), callStack, to_process, visited);
+        initNodeStack(PG->getEntry()->getRoot(), stackTop, to_process, visited);
         return to_process;
     }
 
-    void initNodeStack(PSNode* nd, CallStack stack, std::vector<NodeStackPair>& to_process, std::vector<unsigned>& remainingVisits) {
+    void initNodeStack(PSNode* nd, CallstackNode* stackTop, std::vector<NodeStackPair>& to_process, std::vector<unsigned>& remainingVisits) {
         assert(remainingVisits.at(nd->getID()) && "Visiting already visited node\n");
-        ofs << _tmpNodeStackPairToString({ nd, stack }) << '\n';
+        ofs << _tmpNodeStackPairToString({ nd, stackTop }) << '\n';
 
-        to_process.emplace_back(nd, stack);
+        to_process.emplace_back(nd, stackTop);
         --remainingVisits.at(nd->getID());
 
+        CallstackNode* newTop;
+
         if (nd->getType() == PSNodeType::CALL /*|| nd->getType() == PSNodeType::CALL_FUNCPTR*/) {
-            stack.push(nd);
+            newTop = stackTop->push(nd);
             for (auto *subG : PSNodeCall::cast(nd)->getCallees()) {
                 if (remainingVisits.at(subG->getRoot()->getID()))
-                    initNodeStack(subG->getRoot(), stack, to_process, remainingVisits);
+                    initNodeStack(subG->getRoot(), newTop, to_process, remainingVisits);
 
                 // to fix this situation: CALL is visited (2x), ENTRY is visited(2x), therefore we dont progress
                 // into 3rd visit so the nodes past last CALL_RETURN are not visited 2x but only 1x eg. unsorted/recCycle.c
                 else if (PSNodeCall::cast(nd)->getPairedNode() && remainingVisits.at(PSNodeCall::cast(nd)->getPairedNode()->getID())) {
-                    stack.pop();
-                    initNodeStack(PSNodeCall::cast(nd)->getPairedNode(), stack, to_process, remainingVisits);
+                    newTop = newTop->pop();
+                    initNodeStack(PSNodeCall::cast(nd)->getPairedNode(), newTop, to_process, remainingVisits);
                 }
             }
         } else if (nd->getType() == PSNodeType::RETURN) {
@@ -262,18 +328,18 @@ class InvalidatedAnalysis {
             if (nd->getParent()->getID() == 1)
                 return;
 
-            PSNode* callee = stack.top();
-            stack.pop();
+            PSNode* callee = stackTop->callNode;
+            newTop = stackTop->pop();
 
             for (auto* callRet : PSNodeRet::get(nd)->getReturnSites()) {
                 if (callRet == callee->getPairedNode() && remainingVisits.at(callRet->getID()))
-                    initNodeStack(callRet, stack, to_process, remainingVisits);
+                    initNodeStack(callRet, newTop, to_process, remainingVisits);
             }
 
         } else {
             for (auto* suc : nd->getSuccessors()) {
                 if (remainingVisits.at(suc->getID()))
-                    initNodeStack(suc, stack, to_process, remainingVisits);
+                    initNodeStack(suc, stackTop, to_process, remainingVisits);
             }
         }
     }
@@ -397,52 +463,7 @@ class InvalidatedAnalysis {
         }
     }
 
-    struct CallstackNode {
-        PSNode* callNode{nullptr};
-        CallstackNode* parent{nullptr};
-        std::vector<std::unique_ptr<CallstackNode>> children;
-
-        CallstackNode() = default;
-
-        CallstackNode(PSNode* callNd) : callNode(callNd) {}
-
-        CallstackNode(PSNode* callNd, CallstackNode* parentNd) : callNode(callNd), parent(parentNd) {}
-
-
-        bool empty() const {
-            return callNode == nullptr;
-        }
-
-        bool isLeaf() const {
-            return children.empty();
-        };
-
-        CallstackNode* hasChild(PSNode* call) const {
-            for (auto& nd : children) {
-                if (call == nd->callNode)
-                    return nd.get();
-            }
-            return nullptr;
-        }
-
-        // called upon a top node
-        // either returns a new pointer or creates new child and returns new top pointer
-        CallstackNode* push(PSNode* call) {
-            auto child = hasChild(call);
-            if (!child) {
-                children.emplace_back(llvm::make_unique<CallstackNode>(call, this));
-                return (--children.end())->get();
-            }
-            return child;
-        }
-
-        CallstackNode* pop() {
-            if (parent)
-                return parent;
-            return this;
-        }
-    };
-
+    // last one to get to work
     class WalkCS {
         struct IdTrackerIA {
             std::vector<unsigned> remainingVisits;
@@ -462,16 +483,19 @@ class InvalidatedAnalysis {
             EdgeChooser() = default;
 
             NodeStackPair getSuccs(NodeStackPair* current) {
-
             }
 
+            // takes NodeStackPair from Queue and a function {if not visited then _enqueue; }
             void foreach(NodeStackPair *cur, std::function<void(NodeStackPair*)> Dispatch) {
 //                NodeStackPair copy = *cur;
                 if (PSNodeCall *C = PSNodeCall::get(cur->first)) {
 //                    copy.second.push(cur->first);
+                    cur->second = cur->second->push(cur->first);
                     for (auto subg : C->getCallees()) {
+                        cur->first = subg->getRoot();
+                        Dispatch(cur);
 //                        copy.first = subg->getRoot();
-//                        Dispatch(&copy);
+                        //Dispatch(&copy);
                     }
                     // we do not need to iterate over succesors
                     // if we dive into the procedure (as we will
@@ -481,10 +505,13 @@ class InvalidatedAnalysis {
                     if (!C->getCallees().empty())
                         return;
                 } else if (PSNodeRet *R = PSNodeRet::get(cur->first)) {
-                    for (auto ret : R->getReturnSites()) {
+                    for (auto callRet : R->getReturnSites()) {
                         // TODO: if there is unknown return site, we have to Dispatch all returns
                         // atm there is no unknown call in call stacks
-                        if (ret == cur->second.top()) {
+                        if (callRet == cur->second->callNode->getPairedNode()) {
+                            cur->first = callRet;
+                            cur->second = cur->second->pop();
+                            Dispatch(cur);
 //                            copy.first = ret;
 //                            copy.second.pop();
 //                            Dispatch(&copy);
@@ -495,6 +522,8 @@ class InvalidatedAnalysis {
                 }
 
                 for (auto s : cur->first->getSuccessors()) {
+                    cur->first = s;
+                    Dispatch(cur);
 //                    copy.first = s;
 //                    Dispatch(&copy);
                 }
@@ -524,6 +553,11 @@ class InvalidatedAnalysis {
 
             while (!_queue.empty()) {
                 NodeStackPair* current = _queue.pop();
+                std::cout << current->first->getID() << ": ";
+                for (auto i : _visits.remainingVisits) {
+                    std::cout << i << ' ';
+                }
+                std::cout << '\n';
 
                 append(current);
 
@@ -540,28 +574,51 @@ class InvalidatedAnalysis {
         }
     };
 
-    /*
+
     std::vector<NodeStackPair> getReachables(NodeStackPair* start, std::vector<unsigned> remainingVisits) const {
-        QueueFIFO<NodeStackPair *> fifo;
+        QueueFIFO<NodeStackPair> fifo;
         std::vector<NodeStackPair> cont;
 
-        auto visit = [&remainingVisits](NodeStackPair* pair){ --remainingVisits.at(pair->first->getID()); };
-        auto visited = [&remainingVisits](NodeStackPair* pair){ return remainingVisits.at(pair->first->getID()) == 0; };
+        auto visit = [&remainingVisits](PSNode* nd){ --remainingVisits.at(nd->getID()); };
+        auto visited = [&remainingVisits](PSNode* nd){ return remainingVisits.at(nd->getID()) == 0; };
 
-        fifo.push(start);
+        fifo.push(*start);
 
         while (!fifo.empty()) {
-            NodeStackPair* cur = fifo.pop();
-            visit(cur);
+            NodeStackPair cur = fifo.pop();
+            if (visited(cur.first))
+                continue;
 
-            if (PSNodeCall* C = PSNodeCall::get(cur->first)) {
+            visit(cur.first);
+            cont.push_back(cur);
 
+            if (PSNodeCall* C = PSNodeCall::get(cur.first)) {
+                CallstackNode* pushed = cur.second->push(C);
                 for (auto subg : C->getCallees()) {
-
+                    if (!visited(subg->getRoot()))
+                        fifo.push(std::make_pair(subg->getRoot(), pushed));
+//                    else if (C->getPairedNode() && !visited(C->getPairedNode()))
+//                        fifo.push(std::make_pair(C->getPairedNode(), pushed->pop()));
+                }
+            } else if (PSNodeRet* R = PSNodeRet::get(cur.first)) {
+                if (cur.first->getParent()->getID() == 1)
+                    continue;
+                PSNode* callee = cur.second->callNode;
+                for (auto* callRet : PSNodeRet::get(cur.first)->getReturnSites()) {
+                    if (callRet == callee->getPairedNode() && !visited(callee->getPairedNode()))
+                        fifo.push(std::make_pair(callRet, cur.second->pop()));
+                }
+            } else {
+                for (auto suc : cur.first->getSuccessors()) {
+                    if (!visited(suc)) {
+                        fifo.push(std::make_pair(suc, cur.second));
+                    }
                 }
             }
         }
-    }*/
+
+        return cont;
+    }
 
     std::string _tmpPointsToToString(const PSNode *node) const {
         std::stringstream ss;
@@ -602,17 +659,8 @@ class InvalidatedAnalysis {
 
     std::string _tmpNodeStackPairToString(NodeStackPair pair) const {
         std::stringstream ss;
-        ss << '<' << pair.first->getID() << "> " << PSNodeTypeToCString(pair.first->getType()) << " callStack["
-        << pair.second.size() << "]: { ";
-        bool delim = false;
-        while (!pair.second.empty()) {
-            if (delim)
-                ss << ", ";
-            delim = true;
-            ss << pair.second.top()->getID();
-            pair.second.pop();
-        }
-        ss << " ] }";
+        ss << '<' << pair.first->getID() << "> " << PSNodeTypeToCString(pair.first->getType())
+           << " " << pair.second->toString();
         return ss.str();
     }
 
@@ -627,21 +675,79 @@ public:
 
     void run() {
         auto visited = initVisited(PG);
-        std::vector<NodeStackPair> to_process = initStacks(visited);
+        CallstackNode root;
+        std::vector<NodeStackPair> to_process = initStacks(visited, &root);
         std::vector<NodeStackPair> changed;
 
+        {
+            int i = 0;
+            for (auto item : to_process) {
+                std::cout << "[i=" << i++ << "] <" << item.first->getID() << "> "
+                          << PSNodeTypeToCString(item.first->getType()) << ") "
+                          << item.second->toString() << '\n';
+            }
+            std::cout << '\n';
+        }
         // I could use CallStack to differentiate between local vars in different calls of a function.
         // It wouldn't help with calls from a loop or recursion
         std::map<unsigned, std::set<PSNode*>> parentToLocalsMap;
 
         WalkCS walk(visited);
 
-        CallstackNode root;
+        {
+            unsigned to_processsIdx = 26;
+            auto interprocTrueSize = PG->getNodes(to_process.at(to_processsIdx).first);
+            auto getReach = getReachables(&to_process.at(to_processsIdx), visited);
+            std::vector<unsigned> ids;
+            std::cout << to_process.at(to_processsIdx).first->getID() << ' '
+                      << to_process.at(to_processsIdx).second->toString() << "\n";
+            std::cout << "getNodes (size=" << interprocTrueSize.size() << ")\n";
+            for (auto item : interprocTrueSize)
+                ids.push_back(item->getID());
+            //std::sort(ids.begin(), ids.end());
+            for (auto x : ids)
+                std::cout << x << ' ';
 
-/*
+            ids.clear();
+            std::cout << "\n\ngetReachables (size=" << getReach.size() << ")\n";
+            for (auto item : getReach)
+                ids.push_back(item.first->getID());
+            //std::sort(ids.begin(), ids.end());
+            for (auto x : ids)
+                std::cout << x << ' ';
+
+            std::cout << '\n';
+        }
+        /*auto reach = walk.run(to_process.at(0));
+        std::cout << "reach size { ";
+        for (auto i : reach)
+            std::cout << i.first->getID() << ", ";
+        std::cout << "}\n";*/
+
+        // little test of CallstackNode:
+        /*
+        PSNodeCall a(PSNodeType::CALL, 1);
+        PSNodeCall b(PSNodeType::CALL, 2);
+        PSNodeCall c(PSNodeType::CALL, 3);
+        PSNodeCall d(PSNodeType::CALL, 4);
+
+        auto _ra = root.push(&a);
+        auto _rb = root.push(&b);
+        auto _rac = _ra->push(&c);
+        auto _rad = _ra->push(&d);
+
+        std::cout << _ra->toString() << '\n'
+                  << _rb->toString() << '\n'
+                  << _rac->toString() << '\n'
+                  << _rad->toString() << "\n\n"
+        << (_rad == _ra->push(&d)) << '\n';
+        */
+
+        /*
         while(!to_process.empty()) {
             for (auto& nodeStackPair : to_process) {
                 if (processNode(nodeStackPair.first, parentToLocalsMap)) {
+
                     auto reachables = walk.run(nodeStackPair);
                     //auto reachables = PG->getNodesContexSensitive(&nodeStackPair, visited);
                     if (debugPrint) {
@@ -652,6 +758,7 @@ public:
                         ofs << ")\n\n";
                     }
                     changed.insert(changed.end(), reachables.begin(), reachables.end());
+
                 }
             }
             to_process.swap(changed);
