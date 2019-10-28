@@ -97,7 +97,8 @@ class InvalidatedAnalysis {
     using NodeStackPair = std::pair<PSNode*, CallstackNode*>;
 
     struct State {
-        // TODO: State has info about callStack -> differentiate between local variables
+        // TODO: [hard] State has info about callStack -> differentiate between local variables
+        // sets need to contain pairs <PSNode*, callStack*>
         PSNodePtrSet mustBeInv{};
         PSNodePtrSet mayBeInv{};
         /*
@@ -339,11 +340,12 @@ class InvalidatedAnalysis {
         State _stateBefore = *getState(node); // debug
 
         if (noChange(node)) {
-            // TODO: has to be outside noChange if multiple returns can progress into single CALL_RETURN
-            // TODO: if more than 1 callRet are possible, then we cannot store the route in stack with single CALL*s
+            // TODO: [easy] put outside noChange
+            // has to be outside noChange if multiple returns can progress into single CALL_RETURN
+            // if more than 1 callRet are possible, then we cannot store the route in stack with single CALL*s
             if (isa<PSNodeType::CALL_RETURN>(node)) {
                 auto& returns = PSNodeCallRet::cast(node)->getReturns();
-                // TODO: use only possible call-returns
+                // TODO: [easy] use only possible call-returns. EDIT: it seems I want this default behavior
                 getState(node)->updateState(returns, this);
                 return false;
             }
@@ -367,6 +369,7 @@ class InvalidatedAnalysis {
                 changed |= decideMustOrMay(node, ptrStruct.target);
 
         } else if (auto* entry = PSNodeEntry::get(node)) {
+            // TODO: [easy] take predecessors only from the CALL from the top of callstack
             auto& callers = entry->getCallers();
             preds.insert(preds.end(), callers.begin(), callers.end());
             auto search = parentToLocalsMap.find(node->getParent()->getID());
