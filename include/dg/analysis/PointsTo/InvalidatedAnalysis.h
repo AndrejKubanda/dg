@@ -332,7 +332,8 @@ class InvalidatedAnalysis {
         return mustSize != state->mustBeInv.size() || maySize != state->mayBeInv.size();
     }
 
-    bool processNode(PSNode *node, parentsMap& parentToLocalsMap) {
+    bool processNode(NodeStackPair& pair, parentsMap& parentToLocalsMap) {
+        PSNode* node = pair.first;
         assert(node && node->getID() < _states.size());
         numOfProcessedNodes++;
         ofs << "<" << node->getID() << "> "<< PSNodeTypeToCString(node->getType()) << '\n';
@@ -340,7 +341,7 @@ class InvalidatedAnalysis {
         State _stateBefore = *getState(node); // debug
 
         if (noChange(node)) {
-            // TODO: [easy] put outside noChange
+            // TODO: [easy] put outside noChange EDIT: might be OK if always only 1 CALL is its predecessor
             // has to be outside noChange if multiple returns can progress into single CALL_RETURN
             // if more than 1 callRet are possible, then we cannot store the route in stack with single CALL*s
             if (isa<PSNodeType::CALL_RETURN>(node)) {
@@ -370,6 +371,7 @@ class InvalidatedAnalysis {
 
         } else if (auto* entry = PSNodeEntry::get(node)) {
             // TODO: [easy] take predecessors only from the CALL from the top of callstack
+            // TODO: [optimization] should not return changed=true (I think I care only about free/return changes)
             auto& callers = entry->getCallers();
             preds.insert(preds.end(), callers.begin(), callers.end());
             auto search = parentToLocalsMap.find(node->getParent()->getID());
@@ -588,7 +590,7 @@ public:
 
         while(!to_process.empty()) {
             for (auto& nodeStackPair : to_process) {
-                if (processNode(nodeStackPair.first, parentToLocalsMap)) {
+                if (processNode(nodeStackPair, parentToLocalsMap)) {
                     auto reachables = getReachables(&nodeStackPair);
                     if (debugPrint) {
                         ofs << "    (reachables ";
