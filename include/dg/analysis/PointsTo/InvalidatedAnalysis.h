@@ -28,19 +28,17 @@ class InvalidatedAnalysis {
 
     size_t numOfProcessedNodes = 0;
 
-    using PSNodePtrSet = std::set<PSNode *>;
-    using parentsMap = std::map<unsigned, std::set<PSNode*>>;
-
     struct CallstackNode {
                 PSNode* callNode{nullptr};
                 CallstackNode* parent{nullptr};
                 std::vector<std::unique_ptr<CallstackNode>> children;
+                CallstackNode* root{this};
 
                 CallstackNode() = default;
 
-                CallstackNode(PSNode* callNd) : callNode(callNd) {}
+                CallstackNode(PSNode* callNd) : callNode(callNd){}
 
-                CallstackNode(PSNode* callNd, CallstackNode* parentNd) : callNode(callNd), parent(parentNd) {}
+                CallstackNode(PSNode* callNd, CallstackNode* parentNd) : callNode(callNd), parent(parentNd), root(parentNd->root) {}
 
 
                 bool empty() const {
@@ -96,9 +94,11 @@ class InvalidatedAnalysis {
             };
 
     using NodeStackPair = std::pair<PSNode*, CallstackNode*>;
+    using PSNodePtrSet = std::set<NodeStackPair>;
+    using ParentsMap = std::map<unsigned, std::set<PSNode*>>;
+
 
     struct State {
-        // TODO: [hard] State has info about callStack -> differentiate between local variables
         // sets need to contain pairs <PSNode*, callStack*>
         PSNodePtrSet mustBeInv{};
         PSNodePtrSet mayBeInv{};
@@ -110,12 +110,12 @@ class InvalidatedAnalysis {
         State() = default;
         State(PSNodePtrSet must, PSNodePtrSet may) : mustBeInv(std::move(must)), mayBeInv(std::move(may)) {}
 
-        bool mustContains(PSNode* target) const {
+        bool mustContains(NodeStackPair& target) const {
             auto search = mustBeInv.find(target);
             return search != mustBeInv.end();
         }
 
-        bool mayContains(PSNode* target) const {
+        bool mayContains(NodeStackPair& target) const {
             auto search = mayBeInv.find(target);
             return search != mayBeInv.end();
         }
@@ -146,7 +146,8 @@ class InvalidatedAnalysis {
             bool delim = false;
             for (auto& item : mustBeInv) {
                 if (delim) { ss << ", "; }
-                ss << item->getID();
+                // TODO: print NodeStackPair instead of Node
+                ss << item.first->getID();
                 delim = true;
             }
             ss << " }";
@@ -159,7 +160,8 @@ class InvalidatedAnalysis {
             bool delim = false;
             for (auto& item : mayBeInv) {
                 if (delim) { ss << ", "; }
-                ss << item->getID();
+                // TODO: print NodeStackPair instead of Node
+                ss << item.first->getID();
                 delim = true;
             }
             ss << " }";
@@ -176,7 +178,7 @@ class InvalidatedAnalysis {
         /**
          *  Returns whether State sets have changed.
          */
-        bool updateState(const std::vector<PSNode*>& predecessors, InvalidatedAnalysis* IA, bool noChange=false) {
+        bool updateState(const std::vector<NodeStackPair>& predecessors, InvalidatedAnalysis* IA, bool noChange=false) {
             State stateBefore = *this;
             PSNodePtrSet predMust = absIntersection(predecessors, IA);
             mustBeInv.insert(predMust.begin(), predMust.end());
@@ -193,7 +195,7 @@ class InvalidatedAnalysis {
         }
 
     private:
-        static PSNodePtrSet absUnion(const std::vector<PSNode*>& predecessors, InvalidatedAnalysis* IA) {
+        static PSNodePtrSet absUnion(const std::vector<NodeStackPair>&  predecessors, InvalidatedAnalysis* IA) {
             PSNodePtrSet result;
             if (predecessors.empty())
                 return result;
@@ -201,26 +203,25 @@ class InvalidatedAnalysis {
             PSNodePtrSet* mustSet;
             PSNodePtrSet* maySet;
 
-            for (auto* pred : predecessors) {
-                mustSet = &IA->getState(pred)->mustBeInv;
-                maySet = &IA->getState(pred)->mayBeInv;
+            for (auto& predPair : predecessors) {
+                mustSet = &IA->getState(predPair.first)->mustBeInv;
+                maySet = &IA->getState(predPair.first)->mayBeInv;
                 result.insert(mustSet->begin(), mustSet->end());
                 result.insert(maySet->begin(), maySet->end());
             }
             return result;
         }
 
-        static PSNodePtrSet absIntersection(const std::vector<PSNode*>& predecessors, InvalidatedAnalysis* invAn) {
+        static PSNodePtrSet absIntersection(const std::vector<NodeStackPair>& predecessors, InvalidatedAnalysis* invAn) {
             PSNodePtrSet result;
             if (predecessors.empty())
                 return result;
-
-            State* st = invAn->getState(predecessors.at(0));
+            State* st = invAn->getState(predecessors.at(0).first);
             result.insert(st->mustBeInv.begin(), st->mustBeInv.end());
             PSNodePtrSet tmp;
 
             for (auto it = ++(predecessors.begin()); it != predecessors.end(); ++it) {
-                st = invAn->getState(*it);
+                st = invAn->getState((*it).first);
                 std::set_intersection(result.begin(), result.end(), st->mustBeInv.begin(), st->mustBeInv.end(), std::inserter(tmp, tmp.begin()));
                 std::swap(result, tmp);
                 tmp.clear();
@@ -250,7 +251,7 @@ class InvalidatedAnalysis {
         // CALL_RETURN with multiple RETURNS has no predecessors therefore we take its returns as predecessors
         if (node->getType() == PSNodeType::CALL_RETURN)
             return PSNodeCallRet::cast(node)->getReturns().size() == 1;
-        return node->predecessorsNum() <= 1 && !isRelevantNode(node);
+        return node->predecessorsNum() == 1 && !isRelevantNode(node);
     }
 
     // crates new State in _states and creates a pointer to it in _mapping
@@ -326,21 +327,21 @@ class InvalidatedAnalysis {
         }
     }
 
-    bool decideMustOrMay(PSNode* node, PSNode* target) {
-        State* state = getState(node);
+    bool decideMustOrMay(NodeStackPair& pair, PSNode* target) {
+        State* state = getState(pair.first);
         size_t mustSize = state->mustBeInv.size();
         size_t maySize = state->mayBeInv.size();
-        size_t pointsToSize = node->getOperand(0)->pointsTo.size();
+        size_t pointsToSize = pair.first->getOperand(0)->pointsTo.size();
 
         if (pointsToSize == 1)
-            state->mustBeInv.insert(target);
+            state->mustBeInv.insert({ target, pair.second->root });
         else if (pointsToSize > 1)
-            state->mayBeInv.insert(target);
+            state->mayBeInv.insert({ target, pair.second->root });
 
         return mustSize != state->mustBeInv.size() || maySize != state->mayBeInv.size();
     }
 
-    bool processNode(NodeStackPair& pair, parentsMap& parentToLocalsMap) {
+    bool processNode(NodeStackPair& pair, ParentsMap& parentToLocalsMap) {
         PSNode* node = pair.first;
         assert(node && node->getID() < _states.size());
         numOfProcessedNodes++;
@@ -350,7 +351,10 @@ class InvalidatedAnalysis {
 
         if (noChange(node)) {
             if (isa<PSNodeType::CALL_RETURN>(node)) {
-                auto& returns = PSNodeCallRet::cast(node)->getReturns(); // returns has only 1 item
+                // returns has only 1 item
+                std::vector<NodeStackPair> returns;
+                for (auto* ret : PSNodeCallRet::cast(node)->getReturns())
+                    returns.emplace_back(ret, pair.second->push(pair.first->getPairedNode()));
                 // returns false (RETURN node in previous processNode() has queued its reachable nodes for processing.
                 // therefore there is no need for CALL_RET with 1 "pred" -> RETURN to queue all those nodes again)
                 return getState(node)->updateState(returns, this, true);
@@ -364,7 +368,12 @@ class InvalidatedAnalysis {
 
         bool noChange = false;
         bool changed = false;
-        auto preds = node->getPredecessors();
+//        auto preds = node->getPredecessors();
+        std::vector<NodeStackPair> preds;
+        for (auto* pred : node->getPredecessors()) {
+            preds.emplace_back(pred, pair.second);
+        }
+
         State* st = getState(node);
 
         if ( auto* alloc = PSNodeAlloc::get(node)) {
@@ -374,14 +383,16 @@ class InvalidatedAnalysis {
 
         } else if (isa<PSNodeType::FREE>(node)) {
             for (const auto& ptrStruct : node->getOperand(0)->pointsTo)
-                changed |= decideMustOrMay(node, ptrStruct.target);
+                // TODO: what should I do with target without callStack? Should I use empty stack because heap is "global"?
+                // atm empty stack (root) is used
+                changed |= decideMustOrMay(pair, ptrStruct.target);
 
         } else if (auto* entry = PSNodeEntry::get(node)) {
             noChange = true;
             for (auto& caller : entry->getCallers()) {
                 if (caller == pair.second->callNode) {
                     preds.clear();
-                    preds.emplace_back(caller);
+                    preds.emplace_back(caller, pair.second->pop());
                 }
             }
             auto search = parentToLocalsMap.find(node->getParent()->getID());
@@ -390,12 +401,11 @@ class InvalidatedAnalysis {
 
         } else if (isa<PSNodeType::RETURN>(node)) {
             for (auto& nd : parentToLocalsMap.at(node->getParent()->getID()))
-                changed |= st->mustBeInv.emplace(nd).second;
+                changed |= st->mustBeInv.emplace(nd, pair.second).second;
 
         } else if (isa<PSNodeType::CALL_RETURN>(node)) {
-            for (auto ret : PSNodeCallRet::get(node)->getReturns()) {
-                preds.emplace_back(ret);
-            }
+            for (auto ret : PSNodeCallRet::get(node)->getReturns())
+                preds.emplace_back(ret, pair.second->push(node->getPairedNode()));
         }
 
         changed |= getState(node)->updateState(preds, this, noChange);
@@ -415,11 +425,11 @@ class InvalidatedAnalysis {
         bool changed = false;
         auto& pointsTo = nd->pointsTo;
 
-        for (PSNode* target : getState(nd)->mustBeInv) {
-            ofs << "(must)<" << nd->getID() << ">:fixing pointsTo for target<" << target->getID() << ">\n";
-            if (pointsTo.pointsToTarget(target)) {
-                changed |= pointsTo.removeAny(target);
-                ofs << "<" << target->getID() << "> removed from pointsTo set\n";
+        for (auto& pair : getState(nd)->mustBeInv) {
+            ofs << "(must)<" << nd->getID() << ">:fixing pointsTo for target<" << pair.first->getID() << ">\n";
+            if (pointsTo.pointsToTarget(pair.first)) {
+                changed |= pointsTo.removeAny(pair.first);
+                ofs << "<" << pair.first->getID() << "> removed from pointsTo set\n";
             }
         }
 
@@ -432,10 +442,10 @@ class InvalidatedAnalysis {
     bool fixMay(PSNode* nd) {
         auto& pointsTo = nd->pointsTo;
 
-        for (PSNode* target : getState(nd)->mayBeInv) {
-            ofs << "(may)<" << nd->getID() << ">:fixing pointsTo for target<" << target->getID() << ">\n";
-            if (pointsTo.pointsToTarget(target)) {
-                ofs << "(may)<" << nd->getID() << ">: target<" << target->getID() << "> found\n";
+        for (auto& pair : getState(nd)->mayBeInv) {
+            ofs << "(may)<" << nd->getID() << ">:fixing pointsTo for target<" << pair.first->getID() << ">\n";
+            if (pointsTo.pointsToTarget(pair.first)) {
+                ofs << "(may)<" << nd->getID() << ">: target<" << pair.first->getID() << "> found\n";
                 return true;
             }
         }
@@ -583,39 +593,6 @@ public:
         // It wouldn't help with calls from a loop or recursion
         std::map<unsigned, std::set<PSNode*>> parentToLocalsMap;
 
-        /*{
-            int i = 0;
-            for (auto item : to_process) {
-                std::cout << "[i=" << i++ << "] <" << item.first->getID() << "> "
-                          << PSNodeTypeToCString(item.first->getType()) << ") "
-                          << item.second->toString() << '\n';
-            }
-            std::cout << '\n';
-
-            unsigned to_processsIdx = 26;
-            auto interprocTrueSize = PG->getNodes(to_process.at(to_processsIdx).first);
-            auto getReach = getReachables(&to_process.at(to_processsIdx));
-            std::vector<unsigned> ids;
-            std::cout << to_process.at(to_processsIdx).first->getID() << ' '
-                      << to_process.at(to_processsIdx).second->toString() << "\n";
-            std::cout << "getNodes (size=" << interprocTrueSize.size() << ")\n";
-            for (auto item : interprocTrueSize)
-                ids.push_back(item->getID());
-            //std::sort(ids.begin(), ids.end());
-            for (auto x : ids)
-                std::cout << x << ' ';
-
-            ids.clear();
-            std::cout << "\n\ngetReachables (size=" << getReach.size() << ")\n";
-            for (auto item : getReach)
-                ids.push_back(item.first->getID());
-            //std::sort(ids.begin(), ids.end());
-            for (auto x : ids)
-                std::cout << x << ' ';
-
-            std::cout << '\n';
-        }*/
-
         while(!to_process.empty()) {
             for (auto& nodeStackPair : to_process) {
                 if (processNode(nodeStackPair, parentToLocalsMap)) {
@@ -637,10 +614,10 @@ public:
 
         if (debugPrint) ofs << "processed: " << numOfProcessedNodes << "\n\n" << _tmpStatesToString() << '\n';
 
-        for (auto& nd : PG->getNodes()) {
+        /*for (auto& nd : PG->getNodes()) {
             if (nd)
                 fixPointsTo(nd.get());
-        }
+        }*/
     }
 };
 
