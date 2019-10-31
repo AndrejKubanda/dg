@@ -365,86 +365,6 @@ public:
 
         return cont;
     }
-
-
-    // get nodes in BFS order and store them into the container
-    template <typename ContainerOrNodeOrNodeStackPair>
-    std::vector<std::pair<PSNode*, std::stack<PSNode*>>> getNodesContexSensitive(const ContainerOrNodeOrNodeStackPair& start,
-                                   std::vector<unsigned> visited,
-                                   unsigned expected_num = 0)
-    {
-        using CallStack = std::stack<PSNode*>;
-        using NodeStackPair = std::pair<PSNode*, CallStack>;
-
-        ++dfsnum;
-
-        std::vector<NodeStackPair> cont;
-        if (expected_num != 0)
-            cont.reserve(expected_num);
-
-        struct IdTrackerIA {
-            std::vector<unsigned> remainingVisits;
-
-            IdTrackerIA(std::vector<unsigned> visits) : remainingVisits(std::move(visits)) {}
-
-            void visit(NodeStackPair* pair) {
-                --remainingVisits.at(pair->first->getID());
-            }
-
-            bool visited(NodeStackPair* pair) {
-                return remainingVisits.at(pair->first->getID()) == 0;
-            }
-        };
-
-        // iterate over successors and call (return) edges
-        struct EdgeChooser {
-            EdgeChooser() = default;
-
-            void foreach(NodeStackPair *cur, std::function<void(NodeStackPair*)> Dispatch) {
-                NodeStackPair copy = *cur;
-                if (PSNodeCall *C = PSNodeCall::get(cur->first)) {
-                    copy.second.push(cur->first);
-                    for (auto subg : C->getCallees()) {
-                        copy.first = subg->getRoot();
-                        Dispatch(&copy);
-                    }
-                    // we do not need to iterate over succesors
-                    // if we dive into the procedure (as we will
-                    // return via call return)
-                    // NOTE: we must iterate over successors if the
-                    // function is undefined
-                    if (!C->getCallees().empty())
-                        return;
-                } else if (PSNodeRet *R = PSNodeRet::get(cur->first)) {
-                    for (auto ret : R->getReturnSites()) {
-                        // TODO: if there is unknown return site, we have to Dispatch all returns
-                        // atm there is no unknown call in call stacks
-                        if (ret == cur->second.top()) {
-                            copy.first = ret;
-                            copy.second.pop();
-                            Dispatch(&copy);
-                        }
-                    }
-                    if (!R->getReturnSites().empty())
-                        return;
-                }
-
-                for (auto s : cur->first->getSuccessors()) {
-                    copy.first = s;
-                    Dispatch(&copy);
-                }
-            }
-        };
-
-        IdTrackerIA visitTracker(std::move(visited));
-        EdgeChooser chooser;
-        BFS<NodeStackPair, IdTrackerIA, EdgeChooser> bfs(visitTracker, chooser);
-
-        bfs.run(start, [&cont](NodeStackPair* pair) { cont.push_back(*pair); });
-
-        return cont;
-    }
-
 };
 
 ///
@@ -453,7 +373,7 @@ public:
 inline std::set<PSNode *>
 getReachableNodes(PSNode *n,
                   PSNode *exit = nullptr,
-				  bool interproc = true)
+				  bool interproc = true, bool wholeSubG=false)
 {
     ADT::QueueFIFO<PSNode *> fifo;
     std::set<PSNode *> cont;
@@ -489,6 +409,10 @@ getReachableNodes(PSNode *n,
                     fifo.push(ret);
                 }
             }
+        } else if (wholeSubG && cur->getType() == PSNodeType::CALL_FUNCPTR && cur->getPairedNode() != exit) {
+            // CALL_FUNCPTR divides sub graph into two because CALL_RETURN is not its successor.
+            // Push CALL_FUNCPTR's pairedNode (CALL_RETURN) to fifo so it returns all reachable nodes of given sub graph
+            fifo.push(cur->getPairedNode());
         }
     }
 

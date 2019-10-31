@@ -9,6 +9,7 @@
 #include <sstream>
 #include <fstream>
 #include <llvm/ADT/STLExtras.h>
+#include <dg/llvm/analysis/PointsTo/PointerGraph.h>
 
 namespace dg {
 namespace analysis {
@@ -175,7 +176,7 @@ class InvalidatedAnalysis {
         /**
          *  Returns whether State sets have changed.
          */
-        bool updateState(const std::vector<PSNode*>& predecessors, InvalidatedAnalysis* IA) {
+        bool updateState(const std::vector<PSNode*>& predecessors, InvalidatedAnalysis* IA, bool noChange=false) {
             State stateBefore = *this;
             PSNodePtrSet predMust = absIntersection(predecessors, IA);
             mustBeInv.insert(predMust.begin(), predMust.end());
@@ -186,6 +187,8 @@ class InvalidatedAnalysis {
             std::set_difference(predAbsUnion.begin(), predAbsUnion.end(), mustBeInv.begin(), mustBeInv.end(),
                     std::inserter(tmp, tmp.begin())); // {predUnion + mayBeInv} - {mustBeInv}
             std::swap(tmp, mayBeInv);
+            if (noChange)
+                return false;
             return *this != stateBefore;
         }
 
@@ -233,6 +236,9 @@ class InvalidatedAnalysis {
     std::vector<State *> _mapping;
     std::vector<std::unique_ptr<State>> _states;
 
+    // mapping from sub graph ID to set of nodes with parent of the same ID
+    std::map<unsigned, std::set<unsigned>> subGToNodeIDMap;
+
     static inline bool isRelevantNode(PSNode *node) {
         return node->getType() == PSNodeType::ALLOC ||
                node->getType() == PSNodeType::FREE ||
@@ -241,8 +247,10 @@ class InvalidatedAnalysis {
     }
 
     static inline bool noChange(PSNode *node) {
-        return node->predecessorsNum() == 1 &&
-                !isRelevantNode(node);
+        // CALL_RETURN with multiple RETURNS has no predecessors therefore we take its returns as predecessors
+        if (node->getType() == PSNodeType::CALL_RETURN)
+            return PSNodeCallRet::cast(node)->getReturns().size() == 1;
+        return node->predecessorsNum() <= 1 && !isRelevantNode(node);
     }
 
     // crates new State in _states and creates a pointer to it in _mapping
@@ -290,7 +298,7 @@ class InvalidatedAnalysis {
 
         CallstackNode* newTop;
 
-        if (nd->getType() == PSNodeType::CALL /*|| nd->getType() == PSNodeType::CALL_FUNCPTR*/) {
+        if (nd->getType() == PSNodeType::CALL || nd->getType() == PSNodeType::CALL_FUNCPTR) {
             newTop = stackTop->push(nd);
             for (auto *subG : PSNodeCall::cast(nd)->getCallees()) {
                 resetVisitsOfSubG(visitTracker, subG);
@@ -341,14 +349,11 @@ class InvalidatedAnalysis {
         State _stateBefore = *getState(node); // debug
 
         if (noChange(node)) {
-            // TODO: [easy] put outside noChange EDIT: might be OK if always only 1 CALL is its predecessor
-            // has to be outside noChange if multiple returns can progress into single CALL_RETURN
-            // if more than 1 callRet are possible, then we cannot store the route in stack with single CALL*s
             if (isa<PSNodeType::CALL_RETURN>(node)) {
-                auto& returns = PSNodeCallRet::cast(node)->getReturns();
-                // TODO: [easy] use only possible call-returns. EDIT: it seems I want this default behavior
-                getState(node)->updateState(returns, this);
-                return false;
+                auto& returns = PSNodeCallRet::cast(node)->getReturns(); // returns has only 1 item
+                // returns false (RETURN node in previous processNode() has queued its reachable nodes for processing.
+                // therefore there is no need for CALL_RET with 1 "pred" -> RETURN to queue all those nodes again)
+                return getState(node)->updateState(returns, this, true);
             }
 
             auto pred = node->getSinglePredecessor();
@@ -357,11 +362,13 @@ class InvalidatedAnalysis {
             return false;
         }
 
+        bool noChange = false;
         bool changed = false;
         auto preds = node->getPredecessors();
         State* st = getState(node);
 
         if ( auto* alloc = PSNodeAlloc::get(node)) {
+            noChange = true;
             if (!alloc->isHeap() && !alloc->isGlobal()) // not alloc but store node has info about Global var (?)
                 parentToLocalsMap.at(node->getParent()->getID()).emplace(node);
 
@@ -370,10 +377,13 @@ class InvalidatedAnalysis {
                 changed |= decideMustOrMay(node, ptrStruct.target);
 
         } else if (auto* entry = PSNodeEntry::get(node)) {
-            // TODO: [easy] take predecessors only from the CALL from the top of callstack
-            // TODO: [optimization] should not return changed=true (I think I care only about free/return changes)
-            auto& callers = entry->getCallers();
-            preds.insert(preds.end(), callers.begin(), callers.end());
+            noChange = true;
+            for (auto& caller : entry->getCallers()) {
+                if (caller == pair.second->callNode) {
+                    preds.clear();
+                    preds.emplace_back(caller);
+                }
+            }
             auto search = parentToLocalsMap.find(node->getParent()->getID());
             if (search == parentToLocalsMap.end())
                 parentToLocalsMap.emplace(std::pair<unsigned, std::set<PSNode*>>(node->getParent()->getID(), {}));
@@ -381,12 +391,17 @@ class InvalidatedAnalysis {
         } else if (isa<PSNodeType::RETURN>(node)) {
             for (auto& nd : parentToLocalsMap.at(node->getParent()->getID()))
                 changed |= st->mustBeInv.emplace(nd).second;
+
+        } else if (isa<PSNodeType::CALL_RETURN>(node)) {
+            for (auto ret : PSNodeCallRet::get(node)->getReturns()) {
+                preds.emplace_back(ret);
+            }
         }
 
-        changed |= getState(node)->updateState(preds, this);
+        changed |= getState(node)->updateState(preds, this, noChange);
 
         if (changed)
-            ofs << "  hanged: <" << node->getID() << "> " <<  PSNodeTypeToCString(node->getType()) << '\n'
+            ofs << "  changed: <" << node->getID() << "> " <<  PSNodeTypeToCString(node->getType()) << '\n'
             << _tmpCompareChanges(&_stateBefore, getState(node));
 
         return changed;
@@ -442,9 +457,8 @@ class InvalidatedAnalysis {
     }
 
     void resetVisitsOfSubG(std::vector<bool>& visitTracker, PointerSubgraph* subG) const {
-        auto nodes = getReachableNodes(subG->getRoot(), nullptr, false);
-        for (auto* nd : nodes)
-            visitTracker.at(nd->getID()) = true;
+        for (unsigned ndID : subGToNodeIDMap.at(subG->getID()))
+            visitTracker.at(ndID) = true;
     }
 
     std::vector<NodeStackPair> getReachables(NodeStackPair *start) const {
@@ -493,6 +507,20 @@ class InvalidatedAnalysis {
         return cont;
     }
 
+    std::map<unsigned, std::set<unsigned>> initSubGToID() const {
+        // I think it is better to go over the nodes one more time before processing
+        // so we dont have to compute indices in every resetVisitsOfSubG
+        std::map<unsigned, std::set<unsigned>> map;
+        for (auto& subG : PG->getSubgraphs())
+            map.insert( {subG->getID(), {}} );
+
+        std::set<unsigned> setPtr;
+        for (auto* nd : PG->getNodes(PG->getEntry()->getRoot()))
+            map.at(nd->getParent()->getID()).insert(nd->getID());
+
+        return map;
+    }
+
     std::string _tmpPointsToToString(const PSNode *node) const {
         std::stringstream ss;
         bool delim = false;
@@ -539,7 +567,7 @@ class InvalidatedAnalysis {
 
 public:
     explicit InvalidatedAnalysis(PointerGraph *pg)
-    : PG(pg), _mapping(pg->size()), _states(pg->size()) {
+    : PG(pg), _mapping(pg->size()), _states(pg->size()), subGToNodeIDMap(initSubGToID()) {
         for (size_t i = 1; i < pg->size(); ++i) {
             _states[i] = llvm::make_unique<State>();
             _mapping[i] = _states[i].get();
