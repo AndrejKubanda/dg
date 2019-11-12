@@ -22,6 +22,10 @@ public:
         }
 
     public:
+        unsigned dfs_id{0};
+        bool on_stack {false};
+        unsigned lowpt{0};
+        unsigned scc_id{0};
         ValueT value;
 
         FuncNode(unsigned id, ValueT& nd) : _id(id), value(nd) {};
@@ -40,6 +44,8 @@ public:
             return true;
         }
 
+
+        const std::vector<FuncNode *>& getSuccessors() const { return  _calls; }
         const std::vector<FuncNode *>& getCalls() const { return _calls; }
         const std::vector<FuncNode *>& getCallers() const { return _callers; }
     };

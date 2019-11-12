@@ -240,6 +240,9 @@ class InvalidatedAnalysis {
     // mapping from sub graph ID to set of nodes with parent of the same ID
     std::map<unsigned, std::set<unsigned>> subGToNodeIDMap;
 
+    // tells whether subGraph with ID == index in vector is inside recursion
+    std::vector<bool> recursiveSubGs;
+
     static inline bool isRelevantNode(PSNode *node) {
         return node->getType() == PSNodeType::ALLOC ||
                node->getType() == PSNodeType::FREE ||
@@ -531,6 +534,34 @@ class InvalidatedAnalysis {
         return map;
     }
 
+    std::vector<bool> initRecursions() {
+        // info about (subGraph with parent id i) is on (index i)
+        std::vector<bool> vec(PG->getSubgraphs().size() + 1);
+
+        SCC<GenericCallGraph<PSNode*>::FuncNode> scc;
+
+        std::map<GenericCallGraph<PSNode*>::FuncNode*, PSNode*> funcNodeToEntry;
+        GenericCallGraph<PSNode*>::FuncNode* entryNode;
+
+        for (auto& pair : PG->getCallGraph()) {
+            auto* fNode = const_cast<GenericCallGraph<PSNode*>::FuncNode*>(&pair.second);
+            if (pair.first == PG->getEntry()->getRoot())
+                entryNode = fNode;
+            funcNodeToEntry.emplace(fNode, pair.first);
+        }
+
+        auto computedSCC = scc.compute(entryNode);
+
+        for (auto& component : computedSCC) {
+            for (auto* fNd : component) {
+                if (fNd->calls(fNd) || component.size() > 1)
+                    vec.at(funcNodeToEntry.at(fNd)->getParent()->getID()) = true;
+            }
+        }
+
+        return vec;
+    }
+
     std::string _tmpPointsToToString(const PSNode *node) const {
         std::stringstream ss;
         bool delim = false;
@@ -577,7 +608,7 @@ class InvalidatedAnalysis {
 
 public:
     explicit InvalidatedAnalysis(PointerGraph *pg)
-    : PG(pg), _mapping(pg->size()), _states(pg->size()), subGToNodeIDMap(initSubGToID()) {
+    : PG(pg), _mapping(pg->size()), _states(pg->size()), subGToNodeIDMap(initSubGToID()), recursiveSubGs(initRecursions()) {
         for (size_t i = 1; i < pg->size(); ++i) {
             _states[i] = llvm::make_unique<State>();
             _mapping[i] = _states[i].get();
@@ -605,7 +636,6 @@ public:
                         ofs << ")\n\n";
                     }
                     changed.insert(changed.end(), reachables.begin(), reachables.end());
-
                 }
             }
             to_process.swap(changed);
@@ -614,10 +644,10 @@ public:
 
         if (debugPrint) ofs << "processed: " << numOfProcessedNodes << "\n\n" << _tmpStatesToString() << '\n';
 
-        /*for (auto& nd : PG->getNodes()) {
+        for (auto& nd : PG->getNodes()) {
             if (nd)
                 fixPointsTo(nd.get());
-        }*/
+        }
     }
 };
 
