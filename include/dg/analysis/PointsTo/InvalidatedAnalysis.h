@@ -305,6 +305,8 @@ class InvalidatedAnalysis {
         if (nd->getType() == PSNodeType::CALL || nd->getType() == PSNodeType::CALL_FUNCPTR) {
             newTop = stackTop->push(nd);
             for (auto *subG : PSNodeCall::cast(nd)->getCallees()) {
+//                if (liesOnRecursion(subG->getRoot())) // TODO: rethink and fix
+//                    continue;
                 resetVisitsOfSubG(visitTracker, subG);
                 if (visitTracker.at(subG->getRoot()->getID()))
                     initNodeStack(subG->getRoot(), newTop, to_process, visitTracker);
@@ -554,13 +556,29 @@ class InvalidatedAnalysis {
 
         for (auto& component : computedSCC) {
             for (auto* fNd : component) {
-                if (fNd->calls(fNd) || component.size() > 1)
-                    vec.at(funcNodeToEntry.at(fNd)->getParent()->getID()) = true;
+                if (fNd->calls(fNd) || component.size() > 1) {
+                    if (funcNodeToEntry.at(fNd) && funcNodeToEntry.at(fNd)->getParent())
+                        vec.at(funcNodeToEntry.at(fNd)->getParent()->getID()) = true;
+                }
             }
         }
 
         return vec;
     }
+
+    bool liesOnRecursion(PSNode *nd) {
+        if (!nd || !nd->getParent())
+            return false;
+        return recursiveSubGs.at(nd->getParent()->getID());
+    }
+
+    bool callsRecursion(PSNode* nd) {
+        auto* C = PSNodeCall::get(nd);
+        if (C)
+            return liesOnRecursion(C->getOperand(0));
+        return false;
+    }
+
 
     std::string _tmpPointsToToString(const PSNode *node) const {
         std::stringstream ss;
