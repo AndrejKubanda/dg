@@ -22,9 +22,9 @@ public:
     // default options
     PointerAnalysisFSInv(PointerGraph *ps) : PointerAnalysisFSInv(ps, {}) {}
 
-    void run() override {
+    bool run() override {
         PointerAnalysisFS::run();
-        InvalidatedAnalysis IA(getPS());
+        InvalidatedAnalysis IA(getPG());
         IA.run();
     }
 };

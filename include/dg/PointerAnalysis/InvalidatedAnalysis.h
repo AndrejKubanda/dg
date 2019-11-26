@@ -11,7 +11,6 @@
 #include <llvm/ADT/STLExtras.h>
 
 namespace dg {
-namespace analysis {
 namespace pta {
 
 #define debugPrint 1
@@ -407,7 +406,6 @@ public:
 };
 
 } // namespace pta
-} // namespace analysis
 } // namespace dg
 
 #endif // _DG_INVALIDATED_ANALYSIS_H_
