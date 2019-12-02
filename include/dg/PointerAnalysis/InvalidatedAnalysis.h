@@ -367,6 +367,7 @@ public:
     }
 
     bool run() {
+        std::cerr << "--- Running Invalidated Analysis ---------------\n";
         std::vector<PSNode *> to_process;
         std::vector<PSNode *> changed;
         std::map<unsigned, std::set<PSNode*>> parentToLocalsMap;
@@ -401,6 +402,7 @@ public:
                 fixPointsTo(nd.get());
         }
 
+    std::cerr << "--- End of Invalidated Analysis ----------------\n";
 	return true;
     }
 };
