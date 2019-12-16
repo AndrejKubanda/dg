@@ -211,7 +211,7 @@ class InvalidatedAnalysis {
 
         if (pointsToSize == 1)
             state->mustBeInv.insert(target);
-        else if (pointsToSize > 1)
+        else if (pointsToSize > 1 && state->mustBeInv.find(target) == state->mustBeInv.end())
             state->mayBeInv.insert(target);
 
         return mustSize != state->mustBeInv.size() || maySize != state->mayBeInv.size();

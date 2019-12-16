@@ -25,7 +25,7 @@ public:
     bool run() override {
         PointerAnalysisFS::run();
         InvalidatedAnalysis IA(getPG());
-        IA.run();
+        return IA.run();
     }
 };
 
