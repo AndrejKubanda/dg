@@ -243,8 +243,11 @@ class InvalidatedAnalysis {
         State* st = getState(node);
 
         if ( auto* alloc = PSNodeAlloc::get(node)) {
-            if (!alloc->isHeap() && !alloc->isGlobal()) // TODO: not alloc but store node has info about Global var (?)
+            if (!alloc->isHeap() && !alloc->isGlobal()) { // TODO: not alloc but store node has info about Global var (?)
                 parentToLocalsMap.at(node->getParent()->getID()).emplace(node);
+                return preds.size() > 1 && st->updateState(preds, this);
+            }
+            return false;
 
         } else if (isa<PSNodeType::FREE>(node)) {
             for (const auto& ptrStruct : node->getOperand(0)->pointsTo)
@@ -265,7 +268,7 @@ class InvalidatedAnalysis {
         changed |= getState(node)->updateState(preds, this);
 
         if (changed)
-            ofs << "  hanged: <" << node->getID() << "> " <<  PSNodeTypeToCString(node->getType()) << '\n'
+            ofs << "  changed: <" << node->getID() << "> " <<  PSNodeTypeToCString(node->getType()) << '\n'
             << _tmpCompareChanges(&_stateBefore, getState(node));
 
         return changed;
